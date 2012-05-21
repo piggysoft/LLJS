@@ -47,7 +47,6 @@
       Messages,
       Regex,
       Types,
-      maybeCasts,
       source,
       strict,
       index,
@@ -120,13 +119,9 @@
     VariableDeclarator: 'VariableDeclarator',
     WhileStatement: 'WhileStatement',
     WithStatement: 'WithStatement',
-
-    PointerType: 'PointerType',
-    StructType: 'StructType',
-    ArrowType: 'ArrowType',
-    TypeIdentifier: 'TypeIdentifier',
-    FieldDeclarator: 'FieldDeclarator',
-    TypeAliasDirective: 'TypeAliasDirective',
+    Pointer: 'Pointer',
+    TypeName: 'TypeName',
+    StructDeclaration: 'StructDeclaration',
     CastExpression: 'CastExpression'
   };
 
@@ -169,8 +164,7 @@
     StrictLHSAssignment:  'Assignment to eval or arguments is not allowed in strict mode',
     StrictLHSPostfix:  'Postfix increment/decrement may not have eval or arguments operand in strict mode',
     StrictLHSPrefix:  'Prefix increment/decrement may not have eval or arguments operand in strict mode',
-    StrictReservedWord:  'Use of future reserved word in strict mode',
-    CastingNothing:  'Body of cast expression empty'
+    StrictReservedWord:  'Use of future reserved word in strict mode'
   };
 
   // See also tools/generate-unicode-regex.py.
@@ -192,10 +186,6 @@
     num: true,
     dyn: true
   };
-
-  // A list of call expressions to be checked for if they really should be
-  // cast expressions or call expressions.
-  maybeCasts = [];
 
   // Ensure the condition is true, otherwise throw an error.
   // This is only to have a better contract semantic, i.e. another safety net
@@ -278,6 +268,22 @@
     return false;
   }
 
+  function isTypeSpecifierWord(id) {
+    switch (id) {
+    case 'u8:':
+    case 'i8:':
+    case 'u16:':
+    case 'i16:':
+    case 'u32:':
+    case 'i32:':
+    case 'int:':
+    case 'uint:':
+    case 'void':
+      return true;
+    }
+    return false;
+  }
+
   function isType(id) {
     return id in Types;
   }
@@ -323,10 +329,10 @@
       keyword = (id === 'while') || (id === 'break') || (id === 'catch') || (id === 'throw');
       break;
     case 6:
-      keyword = (id === 'return') || (id === 'typeof') || (id === 'delete') || (id === 'switch') || (id === 'struct') || (id === 'sizeof') || (id === 'extern');
+      keyword = (id === 'return') || (id === 'typeof') || (id === 'delete') || (id === 'switch') || (id === 'struct') || (id === 'sizeof');
       break;
     case 7:
-      keyword = (id === 'default') || (id === 'finally') || (id === 'typedef');
+      keyword = (id === 'default') || (id === 'finally');
       break;
     case 8:
       keyword = (id === 'function') || (id === 'continue') || (id === 'debugger');
@@ -353,6 +359,10 @@
     }
 
     if (strict && isStrictModeReservedWord(id)) {
+      return true;
+    }
+
+    if (isTypeSpecifierWord(id)) {
       return true;
     }
 
@@ -1690,32 +1700,10 @@
   }
 
   function parseLeftHandSideExpressionAllowCall() {
-    var useNew, expr, m, cast = false;
+    var useNew, expr;
 
     useNew = matchKeyword('new');
-    if (useNew) {
-      expr = parseNewExpression();
-    } else {
-      if (match('(')) {
-        m = mark();
-        lex();
-        if (lookahead().type === Syntax.Identifier) {
-          expr = parseInlineableType();
-          if (expr.type === Syntax.TypeIdentifier) {
-            reset(m);
-            expr = parsePrimaryExpression();
-          } else {
-            expect(')');
-            cast = true;
-          }
-        } else {
-          reset(m);
-          expr = parsePrimaryExpression();
-        }
-      } else {
-        expr = parsePrimaryExpression();
-      }
-    }
+    expr = useNew ? parseNewExpression() : parsePrimaryExpression();
 
     while (index < length) {
       if (match('.') || match('->')) {
@@ -1726,19 +1714,10 @@
       } else if (match('[')) {
         expr = parseComputedMember(expr);
       } else if (match('(')) {
-        if (expr.type === Syntax.Identifier) {
-          expr = parseCallMember(expr);
-          maybeCasts.push(expr);
-        } else {
-          expr = parseCallMember(expr);
-        }
+        expr = parseCallMember(expr);
       } else {
         break;
       }
-    }
-
-    if (cast && expr.type !== Syntax.CallExpression) {
-      throwUnexpected(lookahead());
     }
 
     return expr;
@@ -1823,7 +1802,7 @@
       expr = {
         type: Syntax.UnaryExpression,
         operator: 'sizeof',
-        argument: parseInlineableType(true)
+        argument: parseTypeName()
       };
       expect(')');
       return expr;
@@ -1844,17 +1823,36 @@
     return parsePostfixExpression();
   }
 
+  function parseCastExpression() {
+    var m = mark();
+    if (match('(')) {
+      expect('(');
+      var typeName = parseTypeName();
+      if (typeName === null) {
+        reset(m);
+      } else {
+        expect(')');
+        return {
+          type: Syntax.CastExpression,
+          typeName: typeName,
+          argument: parseCastExpression()
+        };
+      }
+    }
+    return parseUnaryExpression();
+  }
+
   // 11.5 Multiplicative Operators
 
   function parseMultiplicativeExpression() {
-    var expr = parseUnaryExpression();
+    var expr = parseCastExpression();
 
     while (match('*') || match('/') || match('%')) {
       expr = {
         type: Syntax.BinaryExpression,
         operator: lex().value,
         left: expr,
-        right: parseUnaryExpression()
+        right: parseCastExpression()
       };
     }
 
@@ -2162,27 +2160,20 @@
     };
   }
 
-  function parsePointerType(base) {
-    if (!base) {
-      return undefined;
-    }
-    var ty = base;
+  function parsePointer() {
+    var count = 0;
     while (match('*')) {
       lex();
-      ty = {
-        type: Syntax.PointerType,
-        base: ty
-      };
+      count++;
     }
-    return ty;
+    return {
+      type: Syntax.Pointer,
+      count: count
+    };
   }
 
-  function parseInlineableType(force) {
-    return parsePointerType(parseTypeIdentifier(force));
-  }
-
-  function parseVariableDeclaration(kind, noAssignment, typeIdentifier) {
-    var declaredType = parsePointerType(typeIdentifier),
+  function parseVariableDeclaration(kind, noAssignment) {
+    var pointer = parsePointer(),
         id = parseVariableIdentifier(),
         init = null;
 
@@ -2200,18 +2191,18 @@
     }
 
     return {
-      type: kind === 'field' ? Syntax.FieldDeclarator : Syntax.VariableDeclarator,
-      decltype: declaredType,
+      type: Syntax.VariableDeclarator,
+      pointer: pointer,
       id: id,
       init: init
     };
   }
 
-  function parseVariableDeclarationList(kind, noAssignment, typeIdentifier) {
+  function parseVariableDeclarationList(kind, noAssignment) {
     var list = [];
 
     while (index < length) {
-      list.push(parseVariableDeclaration(kind, noAssignment, typeIdentifier));
+      list.push(parseVariableDeclaration(kind, noAssignment));
       if (!match(',')) {
         break;
       }
@@ -2221,66 +2212,31 @@
     return list;
   }
 
-  function parseTypeIdentifier(force) {
-    var m = mark();
-    var token = lex();
-    if (token.type !== Token.Identifier && token.type !== Token.Keyword) {
-      throwUnexpected(token);
-    }
-
-    var next = lookahead();
-    if (force || next.type === Token.Identifier || next.value === '*') {
-      return {
-        type: Syntax.TypeIdentifier,
-        name: token.value
-      };
-    }
-
-    reset(m);
-  }
-
-  function parseTypeDef() {
-    expectKeyword('typedef');
-
-    var original;
+  function parseTypeSpecifier() {
     var token = lookahead();
-    if (token.type === Token.Keyword && token.value === "struct") {
-      var original = parseStructType();
-      var alias = parseTypeIdentifier(true);
-    } else {
-      var original = parseInlineableType(true);
-      var alias = parseTypeIdentifier(true);
-      // Do we have a typedef of a function type?
-      if (match('(')) {
+    var typeSpecifier;
+    if (token.type === Token.Identifier || token.type === Token.Keyword) {
+      if (isType(token.value)) {
+        typeSpecifier = token.value;
         lex();
-        var paramTypes = [];
-        if (!match(')')) {
-          while (index < length) {
-            paramTypes.push(parseInlineableType(true));
-            token = lookahead();
-            if (match(')')) {
-              break;
-            }
-            expect(',');
-          }
-        }
-        expect(')');
-
-        original = {
-          type: Syntax.ArrowType,
-          params: paramTypes,
-          return: original
-        };
       }
     }
-    Types[alias.name] = true;
+    return typeSpecifier;
+  }
 
-    consumeSemicolon();
-
+  function parseTypeName() {
+    var typeSpecifier = parseTypeSpecifier();
+    if (!typeSpecifier) {
+      return null;
+    }
+    var pointer;
+    if (typeSpecifier) {
+      pointer = parsePointer();
+    }
     return {
-      type: Syntax.TypeAliasDirective,
-      original: original,
-      alias: alias
+      type: Syntax.TypeName,
+      typeSpecifier: typeSpecifier,
+      pointer: pointer
     };
   }
 
@@ -2289,13 +2245,14 @@
 
     expectKeyword('var');
 
-    declarations = parseVariableDeclarationList(undefined, noAssignment,
-                                                parseTypeIdentifier());
+    var typeSpecifier = parseTypeSpecifier();
+    declarations = parseVariableDeclarationList(undefined, noAssignment);
 
     consumeSemicolon();
 
     var result = {
       type: Syntax.VariableDeclaration,
+      typeSpecifier: typeSpecifier,
       declarations: declarations,
       kind: 'var'
     };
@@ -2303,22 +2260,24 @@
     return result;
   }
 
-  // kind may be `const` or `let` or `extern`
+  // kind may be `const` or `let`
   // Both are experimental and not in the specification yet.
   // see http://wiki.ecmascript.org/doku.php?id=harmony:const
   // and http://wiki.ecmascript.org/doku.php?id=harmony:let
-  function parseConstLetExternDeclaration(kind) {
+  function parseConstLetDeclaration(kind) {
     var declarations;
 
     expectKeyword(kind);
 
-    declarations = parseVariableDeclarationList(kind, undefined, parseTypeIdentifier());
+    var typeSpecifier = parseTypeSpecifier();
+    declarations = parseVariableDeclarationList(kind);
 
     consumeSemicolon();
 
     return {
       type: Syntax.VariableDeclaration,
       declarations: declarations,
+      typeSpecifier: typeSpecifier,
       kind: kind
     };
   }
@@ -2436,10 +2395,11 @@
 
   function parseForVariableDeclaration() {
     var token = lex();
-    var typeIdentifier = parseTypeIdentifier();
+    var typeSpecifier = parseTypeSpecifier();
     var result = {
       type: Syntax.VariableDeclaration,
-      declarations: parseVariableDeclarationList(undefined, undefined, typeIdentifier),
+      typeSpecifier: typeSpecifier,
+      declarations: parseVariableDeclarationList(),
       kind: token.value
     };
     return result;
@@ -2908,6 +2868,8 @@
         return parseForStatement();
       case 'function':
         return parseFunctionDeclaration();
+      case 'struct':
+        return parseStructDeclaration();
       case 'if':
         return parseIfStatement();
       case 'return':
@@ -3026,54 +2988,37 @@
   }
 
   function parseStructDeclaration() {
-    var type = parseStructType();
-    consumeSemicolon();
-    if (type.id) {
-      return {
-        type: Syntax.TypeAliasDirective,
-        original: type,
-        alias: {
-          type: Syntax.TypeIdentifier,
-          name: type.id.name
-        }
-      };
-    }
-
-    return parseStatement();
-  }
-
-  function parseStructType() {
     expectKeyword('struct');
-    if (!match('{')) {
-      var id = parseTypeIdentifier(true);
-      Types[id.name] = true;
-    }
+    var id = parseVariableIdentifier();
+    Types[id.name] = true;
     var statement;
     var list = [];
-
     expect('{');
+
     while (index < length) {
       if (match('}')) {
         break;
       }
-      list.push.apply(list, parseVariableDeclarationList("field", true,
-                                                         parseTypeIdentifier()));
-      consumeSemicolon();
+      statement = parseConstLetDeclaration("let");
+      if (typeof statement === 'undefined') {
+        break;
+      }
+      list.push(statement);
     }
     expect('}');
 
     return {
-      type: Syntax.StructType,
+      type: Syntax.StructDeclaration,
       id: id,
       fields: list
     };
   }
 
   function parseFunctionDeclaration() {
-    var id, param, paramType, params = [], body, token, firstRestricted, message, previousStrict, paramSet, paramTypes, returnType;
+    var id, param, params = [], body, token, firstRestricted, message, previousStrict, paramSet;
 
     expectKeyword('function');
-    returnType = parseInlineableType();
+    var typeName = parseTypeName();
     token = lookahead();
     id = parseVariableIdentifier();
     if (strict) {
@@ -3091,12 +3036,11 @@
     }
 
     expect('(');
-    paramTypes = [];
 
     if (!match(')')) {
       paramSet = {};
       while (index < length) {
-        paramTypes.push(parseInlineableType());
+        var paramTypeName = parseTypeName();
         token = lookahead();
         param = parseVariableIdentifier();
         if (strict) {
@@ -3118,6 +3062,7 @@
             message = Messages.StrictParamDupe;
           }
         }
+        param.typeName = paramTypeName;
         params.push(param);
         paramSet[param.name] = true;
         if (match(')')) {
@@ -3136,39 +3081,20 @@
     }
     strict = previousStrict;
 
-    for (var i = 0, j = paramTypes.length; i < j; i++) {
-      if (!paramTypes[i]) {
-        paramTypes[i] = {
-          type: Syntax.TypeIdentifier,
-          name: "dyn"
-        };
-      }
-    }
-    if (!returnType) {
-      returnType = {
-        type: Syntax.TypeIdentifier,
-        name: "dyn"
-      }
-    }
-
     return {
       type: Syntax.FunctionDeclaration,
       id: id,
-      decltype: {
-        type: Syntax.ArrowType,
-        params: paramTypes,
-        return: returnType
-      },
+      returnType: typeName,
       params: params,
       body: body
     };
   }
 
   function parseFunctionExpression() {
-    var token, id = null, firstRestricted, message, param, paramType, params = [], previousStrict, paramSet, paramTypes, returnType;
+    var token, id = null, firstRestricted, message, param, params = [], body, previousStrict, paramSet;
 
     expectKeyword('function');
-    returnType = parseInlineableType();
+    var typeName = parseTypeName();
     if (!match('(')) {
       token = lookahead();
       id = parseVariableIdentifier();
@@ -3192,7 +3118,7 @@
     if (!match(')')) {
       paramSet = {};
       while (index < length) {
-        paramTypes.push(parseInlineableType());
+        var paramTypeName = parseTypeName();
         token = lookahead();
         param = parseVariableIdentifier();
         if (strict) {
@@ -3214,6 +3140,7 @@
             message = Messages.StrictParamDupe;
           }
         }
+        param.typeName = paramTypeName;
         params.push(param);
         paramSet[param.name] = true;
         if (match(')')) {
@@ -3232,29 +3159,10 @@
     }
     strict = previousStrict;
 
-    for (var i = 0, j = paramTypes.length; i < j; i++) {
-      if (!paramTypes[i]) {
-        paramTypes[i] = {
-          type: Syntax.TypeIdentifier,
-          name: "dyn"
-        };
-      }
-    }
-    if (!returnType) {
-      returnType = {
-        type: Syntax.TypeIdentifier,
-        name: "dyn"
-      }
-    }
-
     return {
       type: Syntax.FunctionExpression,
       id: id,
-      decltype: {
-        type: Syntax.ArrowType,
-        params: paramTypes,
-        return: returnType
-      },
+      returnType: typeName,
       params: params,
       body: body
     };
@@ -3262,26 +3170,16 @@
 
   // 14 Program
 
-  function parseSourceElement(inToplevel) {
+  function parseSourceElement() {
     var token = lookahead();
+
     if (token.type === Token.Keyword) {
       switch (token.value) {
       case 'const':
       case 'let':
-      case 'extern':
-        return parseConstLetExternDeclaration(token.value);
+        return parseConstLetDeclaration(token.value);
       case 'function':
         return parseFunctionDeclaration();
-      case 'struct':
-        if (inToplevel) {
-          return parseStructDeclaration();
-        }
-        // FALLTHROUGH
-      case 'typedef':
-        if (inToplevel) {
-          return parseTypeDef();
-        }
-        // FALLTHROUGH
       default:
         return parseStatement();
       }
@@ -3301,7 +3199,7 @@
         break;
       }
 
-      sourceElement = parseSourceElement(true);
+      sourceElement = parseSourceElement();
       sourceElements.push(sourceElement);
       if (sourceElement.expression.type !== Syntax.Literal) {
         // this is not directive
@@ -3321,7 +3219,7 @@
     }
 
     while (index < length) {
-      sourceElement = parseSourceElement(true);
+      sourceElement = parseSourceElement();
       if (typeof sourceElement === 'undefined') {
         break;
       }
@@ -3617,7 +3515,7 @@
       extra.parseCatchClause = parseCatchClause;
       extra.parseComputedMember = parseComputedMember;
       extra.parseConditionalExpression = parseConditionalExpression;
-      extra.parseConstLetExternDeclaration = parseConstLetExternDeclaration;
+      extra.parseConstLetDeclaration = parseConstLetDeclaration;
       extra.parseEqualityExpression = parseEqualityExpression;
       extra.parseExpression = parseExpression;
       extra.parseForVariableDeclaration = parseForVariableDeclaration;
@@ -3654,7 +3552,7 @@
       parseCatchClause = wrapTracking(extra.parseCatchClause);
       parseComputedMember = wrapTracking(extra.parseComputedMember);
       parseConditionalExpression = wrapTracking(extra.parseConditionalExpression);
-      parseConstLetExternDeclaration = wrapTracking(extra.parseConstLetExternDeclaration);
+      parseConstLetDeclaration = wrapTracking(extra.parseConstLetDeclaration);
       parseEqualityExpression = wrapTracking(extra.parseEqualityExpression);
       parseExpression = wrapTracking(extra.parseExpression);
       parseForVariableDeclaration = wrapTracking(extra.parseForVariableDeclaration);
@@ -3679,16 +3577,6 @@
       parseUnaryExpression = wrapTracking(extra.parseUnaryExpression);
       parseVariableDeclaration = wrapTracking(extra.parseVariableDeclaration);
       parseVariableIdentifier = wrapTracking(extra.parseVariableIdentifier);
-
-      extra.parsePointerType = parsePointerType;
-      extra.parseStructType = parseStructType;
-      extra.parseTypeIdentifier = parseTypeIdentifier;
-      extra.parseTypeDef = parseTypeDef;
-
-      parsePointerType = wrapTracking(extra.parsePointerType);
-      parseStructType = wrapTracking(extra.parseStructType);
-      parseTypeIdentifier = wrapTracking(extra.parseTypeIdentifier);
-      parseTypeDef = wrapTracking(parseTypeDef);
     }
 
     if (typeof extra.tokens !== 'undefined') {
@@ -3721,7 +3609,7 @@
       parseCatchClause = extra.parseCatchClause;
       parseComputedMember = extra.parseComputedMember;
       parseConditionalExpression = extra.parseConditionalExpression;
-      parseConstLetExternDeclaration = extra.parseConstLetExternDeclaration;
+      parseConstLetDeclaration = extra.parseConstLetDeclaration;
       parseEqualityExpression = extra.parseEqualityExpression;
       parseExpression = extra.parseExpression;
       parseForVariableDeclaration = extra.parseForVariableDeclaration;
@@ -3764,40 +3652,8 @@
     return result;
   }
 
-  function disambiguateCast(call) {
-    var callee, args, as, length;
-
-    callee = call.callee;
-    args = call.arguments;
-    length = args.length;
-    if (!isType(callee.name)) {
-      return;
-    }
-
-    as = {
-      type: Syntax.TypeIdentifier,
-      name: callee.name
-    };
-
-    call.type = Syntax.CastExpression;
-    call.as = as;
-    if (length === 0) {
-      throwError({}, Messages.CastingNothing);
-    } else if (length === 1) {
-      call.argument = args[0];
-    } else {
-      call.argument = {
-        type: Syntax.SequenceExpression,
-        expressions: args
-      };
-    }
-
-    delete call.callee;
-    delete call.arguments;
-  }
-
   function parse(code, options) {
-    var program, toString, i, j;
+    var program, toString;
 
     toString = String;
     if (typeof code !== 'string' && !(code instanceof String)) {
@@ -3868,10 +3724,6 @@
     } finally {
       unpatch();
       extra = {};
-    }
-
-    for (i = 0, j = maybeCasts.length; i < j; i++) {
-      disambiguateCast(maybeCasts[i]);
     }
 
     return program;
