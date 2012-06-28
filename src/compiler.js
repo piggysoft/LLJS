@@ -11,6 +11,24 @@
     var T = estransform;
   }
 
+  if (typeof process !== "undefined") {
+    var jsFrontend = require("./js_frontend.js");
+  } else {
+    load("./js_frontend.js");
+  }
+
+  if (typeof process !== "undefined") {
+    var S = require("./scope.js");
+  } else {
+    load("./scope.js");
+  }
+
+  if (typeof process !== "undefined") {
+    var Types = require("./types.js");
+  } else {
+    load("./types.js");
+  }
+
   /**
    * Import nodes.
    */
@@ -47,6 +65,25 @@
   const assert = util.assert;
   const quote = util.quote;
   const clone = util.clone;
+  const extend = util.extend;
+
+  /**
+   * Import scopes.
+   */
+  const Variable = S.Variable;
+  const Scope = S.Scope;
+  const Frame = S.Frame;
+  const getCachedLocal = S.getCachedLocal;
+
+  /**
+   * Import types.
+   */
+  const TypeAlias = Types.TypeAlias;
+  const PrimitiveType = Types.PrimitiveType;
+  const StructType = Types.StructType;
+  const UnionType = Types.UnionType;
+  const PointerType = Types.PointerType;
+  const ArrowType = Types.ArrowType;
 
   /**
    * Misc utility functions.
@@ -78,16 +115,6 @@
     return (offset + (alignment - 1)) & ~(alignment - 1);
   }
 
-  function extend(old, props) {
-    var newObj = Object.create(old);
-    if (props) {
-      for (var key in props) {
-        newObj[key] = props[key];
-      }
-    }
-    return newObj;
-  }
-
   function check(condition, message, warn) {
     if (!condition) {
       if (warn) {
@@ -106,435 +133,6 @@
     }
   }
 
-  /**
-   * Types.
-   */
-
-  function tystr(type, lvl) {
-    return type ? type.toString(lvl) : "dyn";
-  }
-
-  function TypeAlias(name) {
-    this.name = name;
-  };
-
-  function PrimitiveType(name, size, defaultValue, signed) {
-    this.name = name;
-    this.size = size;
-    this.signed = signed;
-    this.defaultValue = defaultValue;
-    this.align = this;
-  };
-
-  PrimitiveType.prototype.toString = function () {
-    return this.name;
-  };
-
-  PrimitiveType.prototype.lint = function () {};
-
-  function StructType(name) {
-    this.name = name;
-    this.fields = [];
-    this.offset = 0;
-  }
-
-  StructType.prototype.toString = function (lvl) {
-    lvl = lvl || 0;
-    if (lvl > 0) {
-      return this.name || "<anon struct>";
-    }
-    var s = "struct" + (this.name ? (" " + this.name) : " ") + " { ";
-    s += this.fields.map(function (f) {
-      return tystr(f.type, lvl + 1) + " " + f.name;
-    }).join("; ");
-    return s + " }";
-  };
-
-  StructType.prototype.getField = function getField(name) {
-    var fields = this.fields;
-    for (var i = 0; i < fields.length; i++) {
-      if (fields[i].name === name) {
-        return fields[i];
-      }
-    }
-    return null;
-  };
-
-  function UnionType(name) {
-    this.name = name;
-    this.fields = [];
-    this.offset = 0;
-  }
-
-  UnionType.prototype.toString = function (lvl) {
-    lvl = lvl || 0;
-    if (lvl > 0) {
-      return this.name || "<anon union>";
-    }
-    var s = "union" + (this.name ? (" " + this.name) : " ") + " { ";
-    s += this.fields.map(function (f) {
-      return tystr(f.type, lvl + 1) + " " + f.name;
-    }).join("; ");
-    return s + " }";
-  };
-
-  UnionType.prototype.getField = function getField(name) {
-    var fields = this.fields;
-    for (var i = 0; i < fields.length; i++) {
-      if (fields[i].name === name) {
-        return fields[i];
-      }
-    }
-    return null;
-  };
-
-  function PointerType(base) {
-    this.base = base;
-  };
-
-  PointerType.prototype.defaultValue = 0;
-  PointerType.prototype.size = 4;
-
-  PointerType.prototype.toString = function (lvl) {
-    lvl = lvl || 0;
-    return tystr(this.base, lvl + 1) + "*";
-  };
-
-  function ArrowType(paramTypes, returnType) {
-    this.paramTypes = paramTypes;
-    this.returnType = returnType;
-  }
-
-  ArrowType.prototype.toString = function () {
-    return tystr(this.returnType, 0) + "(" + this.paramTypes.map(function (pty) {
-      return tystr(pty, 0);
-    }).join(", ") + ")";
-  };
-
-  const u8ty  = new PrimitiveType("u8",  1, 0, false);
-  const i8ty  = new PrimitiveType("i8",  1, 0, true);
-  const u16ty = new PrimitiveType("u16", 2, 0, false);
-  const i16ty = new PrimitiveType("i16", 2, 0, true);
-  const u32ty = new PrimitiveType("u32", 4, 0, false);
-  const i32ty = new PrimitiveType("i32", 4, 0, true);
-  const f32ty = new PrimitiveType("f32", 4, 0, undefined);
-  const f64ty = new PrimitiveType("f64", 8, 0, undefined);
-
-  const wordTy = u32ty;
-  const voidTy = new PrimitiveType("void", 0, 0, undefined);
-  const nullTy = new PrimitiveType("null", 0, 0, undefined);
-  const bytePointerTy = new PointerType(u8ty);
-  const spTy = new PointerType(u32ty);
-
-  const mallocTy = new ArrowType([u32ty], bytePointerTy);
-  const freeTy = new ArrowType([bytePointerTy], voidTy);
-
-  function createMemcpyType(pointerTy) {
-    return new ArrowType([pointerTy, pointerTy, u32ty], pointerTy);
-  }
-
-  function createMemsetType(pointerTy) {
-    return new ArrowType([pointerTy, pointerTy.base, u32ty], voidTy);
-  }
-
-  const memcpyTy  = createMemcpyType(bytePointerTy);
-  const memcpy2Ty = createMemcpyType(new PointerType(u16ty));
-  const memcpy4Ty = createMemcpyType(new PointerType(u32ty));
-  const memsetTy  = createMemsetType(bytePointerTy);
-  const memset2Ty = createMemsetType(new PointerType(u16ty));
-  const memset4Ty = createMemsetType(new PointerType(u32ty));
-
-  u8ty.integral = u8ty.numeric = true;
-  i8ty.integral = i8ty.numeric = true;
-  u16ty.integral = u16ty.numeric = true;
-  i16ty.integral = i16ty.numeric = true;
-  u32ty.integral = u32ty.numeric = true;
-  i32ty.integral = i32ty.numeric = true;
-  f32ty.numeric = true;
-  f64ty.numeric = true;
-
-  var builtinTypes = {
-    u8:     u8ty,
-    i8:     i8ty,
-    u16:    u16ty,
-    i16:    i16ty,
-    u32:    u32ty,
-    i32:    i32ty,
-    f32:    f32ty,
-    f64:    f64ty,
-
-    num:    f64ty,
-    int:    i32ty,
-    uint:   u32ty,
-    float:  f32ty,
-    double: f64ty,
-
-    byte:   u8ty,
-    word:   u32ty,
-
-    void:   voidTy,
-    null:   nullTy,
-    dyn:    undefined
-  };
-
-  PointerType.prototype.align = u32ty;
-
-  /**
-   * Scopes and Variables
-   */
-
-  function Variable(name, type) {
-    this.name = name;
-    this.type = type;
-    this.isStackAllocated = type instanceof StructType || type instanceof UnionType;
-  }
-
-  Variable.prototype.toString = function () {
-    return tystr(this.type, 0) + " " + this.name;
-  };
-
-  Variable.prototype.getStackAccess = function getStackAccess(scope, loc) {
-    assert(this.isStackAllocated);
-    assert(typeof this.wordOffset !== "undefined", "stack-allocated variable offset not computed.");
-    var byteOffset = this.wordOffset * wordTy.size;
-    return dereference(scope.SP(), byteOffset, this.type, scope, loc);
-  };
-
-  function Scope(parent, name) {
-    this.name = name;
-    this.parent = parent;
-    this.root = parent.root;
-    this.variables = Object.create(null);
-    this.frame = parent.frame;
-    assert(this.frame instanceof Frame);
-  }
-
-  Scope.prototype.getVariable = function getVariable(name, local) {
-    var variable = this.variables[name];
-    if (variable instanceof Variable) {
-      return variable;
-    }
-
-    if (this.parent && !local) {
-      return this.parent.getVariable(name);
-    }
-
-    return null;
-  };
-
-  Scope.prototype.freshName = function freshName(name, variable) {
-    var mangles = this.frame.mangles;
-    var fresh = 0;
-    var freshName = name;
-    while (mangles[freshName]) {
-      freshName = name + "$" + ++fresh;
-    }
-    if (variable) {
-      mangles[freshName] = variable;
-    }
-    return freshName;
-  };
-
-  Scope.prototype.freshVariable = function freshVariable(name, type) {
-    var variable = new Variable(name, type);
-    variable.name = this.freshName(name, variable);
-    return variable;
-  };
-
-  Scope.prototype.freshTemp = function freshTemp(ty, loc, inDeclarator) {
-    var t = this.freshVariable("_", ty);
-    var id = cast(new Identifier(t.name), ty);
-    if (!inDeclarator) {
-      var cachedLocals = this.frame.cachedLocals;
-      cachedLocals[t.name] = new VariableDeclarator(id);
-    }
-    return id;
-  };
-
-  Scope.prototype.cacheReference = function cacheReference(node) {
-    assert(node);
-
-    var def, use;
-
-    if (node instanceof MemberExpression && !(node.object instanceof Identifier)) {
-      assert(!node.computed);
-      var t = this.freshTemp(node.object.ty, node.object.loc);
-      node.object = new AssignmentExpression(t, "=", node.object, node.object.loc);
-      var use = new MemberExpression(t, node.property, false, "[]", node.property.loc);
-      return { def: node, use: use };
-    }
-
-    return { def: node, use: node };
-  };
-
-  Scope.prototype.addVariable = function addVariable(variable, external) {
-    assert(variable);
-    assert(!variable.frame);
-    assert(!this.variables[variable.name], "Scope already has a variable named " + variable.name);
-    variable.frame = this.frame;
-
-    var variables = this.variables;
-    var name = variable.name;
-
-    variables[name] = variable;
-    if (!external) {
-      variable.name = this.freshName(name, variable);
-    }
-
-    logger.info("added variable " + variable + " to scope " + this);
-  };
-
-  Scope.prototype.MEMORY = function MEMORY() {
-    return this.root.MEMORY();
-  };
-
-  Scope.prototype.getView = function getView(type) {
-    return this.frame.getView(type);
-  };
-
-  Scope.prototype.MALLOC = function MALLOC() {
-    return this.frame.MALLOC();
-  };
-
-  Scope.prototype.FREE = function FREE() {
-    return this.frame.FREE();
-  };
-
-  Scope.prototype.MEMCPY = function MEMCPY(size) {
-    return this.frame.MEMCPY(size);
-  };
-
-  Scope.prototype.MEMSET = function MEMSET(size) {
-    return this.frame.MEMSET(size);
-  };
-
-  Scope.prototype.MEMCHECK_CALL_PUSH = function MEMCHECK_CALL_PUSH() {
-    return this.frame.MEMCHECK_CALL_PUSH();
-  };
-
-  Scope.prototype.MEMCHECK_CALL_RESET = function MEMCHECK_CALL_RESET() {
-    return this.frame.MEMCHECK_CALL_RESET();
-  };
-
-  Scope.prototype.MEMCHECK_CALL_POP = function MEMCHECK_CALL_POP() {
-    return this.frame.MEMCHECK_CALL_POP();
-  };
-
-  Scope.prototype.toString = function () {
-    return this.name;
-  };
-
-  function Frame(parent, name) {
-    this.name = name;
-    this.parent = parent;
-    this.root = parent ? parent.root : this;
-    this.variables = Object.create(null);
-    this.cachedLocals = Object.create(null);
-    this.frame = this;
-    this.mangles = Object.create(null);
-  }
-
-  Frame.prototype = Object.create(Scope.prototype);
-
-  function getCachedLocal(frame, name, ty) {
-    var cachedLocals = frame.cachedLocals;
-    var cname = "$" + name;
-    if (!cachedLocals[cname]) {
-      var id = cast(new Identifier(frame.freshVariable(cname, ty).name), ty);
-      var init = new MemberExpression(frame.root.MEMORY(), new Identifier(name), false);
-      cachedLocals[cname] = new VariableDeclarator(id, init, false);
-    }
-    return cachedLocals[cname].id;
-  }
-
-  Frame.prototype.MEMORY = function MEMORY() {
-    assert(this.root === this);
-    if (!this.cachedMEMORY) {
-      this.cachedMEMORY = new Identifier(this.freshVariable("$M").name);
-    }
-    return this.cachedMEMORY;
-  };
-
-  Frame.prototype.MALLOC = function MALLOC() {
-    return getCachedLocal(this, "malloc", mallocTy);
-  };
-
-  Frame.prototype.FREE = function FREE() {
-    return getCachedLocal(this, "free", freeTy);
-  };
-
-  Frame.prototype.MEMCPY = function MEMCPY(size) {
-    assert(size === 1 || size === 2 || size === 4);
-    var name, ty;
-    switch (size) {
-    case 1: name = "memcpy"; ty = memcpyTy; break;
-    case 2: name = "memcpy2"; ty = memcpy2Ty; break;
-    case 4: name = "memcpy4"; ty = memcpy4Ty; break;
-    }
-    return getCachedLocal(this, name, ty);
-  };
-
-  Frame.prototype.MEMSET = function MEMSET(size) {
-    assert(size === 1 || size === 2 || size === 4);
-    var name, ty;
-    switch (size) {
-    case 1: name = "memset"; ty = memsetTy; break;
-    case 2: name = "memset2"; ty = memset2Ty; break;
-    case 4: name = "memset4"; ty = memset4Ty; break;
-    }
-    return getCachedLocal(this, name, ty);
-  };
-
-  Frame.prototype.MEMCHECK_CALL_PUSH = function MEMCHECK_CALL_PUSH() {
-    return getCachedLocal(this, "memcheck_call_push", "dyn");
-  };
-
-  Frame.prototype.MEMCHECK_CALL_RESET = function MEMCHECK_CALL_RESET() {
-    return getCachedLocal(this, "memcheck_call_reset", "dyn");
-  };
-
-  Frame.prototype.MEMCHECK_CALL_POP = function MEMCHECK_CALL_POP() {
-    return getCachedLocal(this, "memcheck_call_pop", "dyn");
-  };
-
-  Frame.prototype.getView = function getView(ty) {
-    assert(ty);
-    assert(ty.align);
-
-    var alignType = ty.align;
-    if (typeof alignType.signed === "undefined") {
-      return getCachedLocal(this, "F" + alignType.size);
-    }
-    return getCachedLocal(this, (alignType.signed ? "I" : "U") + alignType.size);
-  };
-
-  Frame.prototype.SP = function SP() {
-    if (!this.cachedSP) {
-      this.cachedSP = cast(new Identifier(this.freshVariable("$SP").name), spTy);
-    }
-    return this.cachedSP;
-  };
-
-  Frame.prototype.realSP = function realSP() {
-    return cast(new MemberExpression(this.getView(builtinTypes.uint), new Literal(1), true), spTy);
-  };
-
-  Frame.prototype.close = function close() {
-    const wordSize = wordTy.size;
-    var wordOffset = 0;
-    var mangles = this.mangles;
-    // The SP and frame sizes are in *words*, since we expect most accesses
-    // are to ints, but the alignment is by *double word*, to fit doubles.
-    for (var name in mangles) {
-      var variable = mangles[name];
-      if (mangles[name].isStackAllocated) {
-        variable.wordOffset = wordOffset;
-        wordOffset += alignTo(variable.type.size, wordSize * 2) / wordSize;
-      }
-    }
-
-    this.frameSizeInWords = wordOffset;
-  };
 
   /**
    * Pass 1: resolve type synonyms and do some type sanity checking
@@ -632,9 +230,6 @@
       field = fields[i];
       if (field.type) {
         field.type = field.type.resolve(types);
-        if (field.type instanceof ArrowType) {
-          field.type.paramTypes.unshift(new PointerType(this));
-        }
       }
     }
     finishResolving(this);
@@ -677,26 +272,20 @@
 
   PointerType.prototype.lint = function () {
     check(this.base, "pointer without base type");
-    check(this.base.size, "cannot take pointer of size 0 type " + quote(tystr(this.base, 0)));
+    check(this.base.size, "cannot take pointer of size 0 type " + quote(Types.tystr(this.base, 0)));
   };
 
   StructType.prototype.lint = function () {
     var maxAlignSize = 1;
-    var maxAlignSizeType = u8ty;
+    var maxAlignSizeType = Types.u8ty;
     var fields = this.fields
     var field, type;
     var prev = { offset: 0, type: { size: 0 } };
     for (var i = 0, j = fields.length; i < j; i++) {
-      if (fields[i].type instanceof ArrowType) {
-        // Ignore member functions.
-        continue;
-      }
-
       field = fields[i];
       type = field.type;
-
       check(type, "cannot have untyped field");
-      check(type.size, "cannot have fields of size 0 type " + quote(tystr(type, 0)));
+      check(type.size, "cannot have fields of size 0 type " + quote(Types.tystr(type, 0)));
 
       if (type.align.size > maxAlignSize) {
         maxAlignSize = type.align.size;
@@ -813,25 +402,6 @@
     return this;
   };
 
-  TypeAliasDirective.prototype.scan = function (o) {
-    var scope;
-    var thisTy = new PointerType(o.types[this.original.id.name]);
-    if (this.original instanceof T.StructType) {
-      var fields = this.original.fields;
-      for (var i = 0; i < fields.length; i++) {
-        if (fields[i] instanceof FunctionDeclaration) {
-          if (!scope) {
-            scope = new Frame(o.scope, "Struct " + this.original.id.name);
-          }
-          o = extend(o, { thisTy: thisTy });
-          o.scope = scope;
-          fields[i].scan(o);
-        }
-      }
-    }
-    return this;
-  }
-
   FunctionExpression.prototype.scan =
   FunctionDeclaration.prototype.scan = function (o) {
     logger.push(this);
@@ -851,10 +421,6 @@
     scope = new Frame(scope, "Function " + (this.id ? this.id.name : "anonymous"));
     scope.returnType = ty.returnType;
     o.scope = this.frame = scope;
-
-    if (o.thisTy) {
-      scope.addVariable(new Variable("this", o.thisTy));
-    }
 
     var params = this.params;
     var parameters = this.parameters = [];
@@ -1011,7 +577,7 @@
     node.ty = ty;
     return node;
   }
-
+  
   Node.prototype.transform = T.makePass("transform", "transformNode");
 
   function compileList(list, o) {
@@ -1025,20 +591,10 @@
     }
     return translist;
   }
+  
 
-  TypeAliasDirective.prototype.transform = function (o) {
-    var functions = [];
-    if (this.original instanceof T.StructType) {
-      var fields = this.original.fields;
-      for (var i = 0; i < fields.length; i++) {
-        var field = fields[i];
-        if (field instanceof FunctionDeclaration) {
-          field.id.name = this.original.id.name + "$" + field.id.name;
-          functions.push(field.transform(o));
-        }
-      }
-    }
-    return new BlockStatement(functions);
+  TypeAliasDirective.prototype.transform = function () {
+    return null;
   };
 
   Program.prototype.transform = function (o) {
@@ -1054,7 +610,7 @@
     o = extend(o);
     o.scope = this.frame;
 
-
+    
     assert(this.body instanceof BlockStatement);
     this.body.body = compileList(this.body.body, o);
 
@@ -1094,19 +650,11 @@
 
   Literal.prototype.transformNode = function (o) {
     if (this.value === null) {
-      return cast(this, nullTy);
+      return cast(this, Types.nullTy);
     }
 
     if (typeof this.value === "number") {
-      return cast(this, isInteger(this.value) ? i32ty : f64ty);
-    }
-  };
-
-  ThisExpression.prototype.transformNode = function (o) {
-    var scope = o.scope;
-    var variable = scope.getVariable("this");
-    if (variable) {
-      return cast(this, variable.type);
+      return cast(this, isInteger(this.value) ? Types.i32ty : Types.f64ty);
     }
   };
 
@@ -1154,7 +702,7 @@
     var ty = arg ? arg.ty : undefined;
     if (returnType) {
       check(returnType.assignableFrom(ty), "incompatible types: returning " +
-            quote(tystr(ty, 0)) + " as " + quote(tystr(returnType, 0)));
+            quote(Types.tystr(ty, 0)) + " as " + quote(Types.tystr(returnType, 0)));
       if (arg) {
         this.argument = cast(arg, returnType);
       }
@@ -1194,7 +742,7 @@
         ty = lty;
       } else if (rty instanceof PointerType && op === "-") {
         if (lty.assignableFrom(rty)) {
-          ty = i32ty;
+          ty = Types.i32ty;
         }
       }
     } else if (BINOP_COMPARISON.indexOf(op) >= 0) {
@@ -1203,9 +751,9 @@
       } else if (rty instanceof PointerType && isNull(this.left)) {
         this.left = cast(this.left, rty);
       }
-      ty = i32ty;
+      ty = Types.i32ty;
     } else if (BINOP_BITWISE.indexOf(op) >= 0) {
-      ty = i32ty;
+      ty = Types.i32ty;
     } else if (BINOP_ARITHMETIC.indexOf(op) >= 0 &&
                (lty instanceof PrimitiveType && lty.numeric) &&
                (rty instanceof PrimitiveType && rty.numeric)) {
@@ -1214,12 +762,12 @@
       var wantsToBe;
       if (lty.integral && rty.integral &&
           !(((wantsToBe = o.wantsToBe) instanceof PrimitiveType) &&
-            wantsToBe.size > i32ty.size)) {
+            wantsToBe.size > Types.i32ty.size)) {
         // Force a CastExpression here so we convert it during lowering
         // without warnings.
-        return cast(this, i32ty, true);
+        return cast(this, Types.i32ty, true);
       }
-      ty = f64ty;
+      ty = Types.f64ty;
     }
 
     if (ty) {
@@ -1233,7 +781,7 @@
 
     if (op === "sizeof") {
       ty = this.argument.reflect(o);
-      return cast(new Literal(ty.size, this.argument.loc), i32ty);
+      return cast(new Literal(ty.size, this.argument.loc), Types.i32ty);
     }
 
     var arg = this.argument = this.argument.transform(o);
@@ -1245,7 +793,7 @@
     }
 
     if (op === "*") {
-      check(ty instanceof PointerType, "cannot dereference non-pointer type " + quote(tystr(ty, 0)));
+      check(ty instanceof PointerType, "cannot dereference non-pointer type " + quote(Types.tystr(ty, 0)));
       return cast(this, ty.base);
     }
 
@@ -1258,14 +806,14 @@
     }
 
     if (op === "!" || op === "~") {
-      return cast(this, i32ty);
+      return cast(this, Types.i32ty);
     }
 
     if (op === "-") {
       if (arg.ty && arg.ty.numeric) {
         return cast(this, arg.ty);
       }
-      return cast(this, f64ty);
+      return cast(this, Types.f64ty);
     }
 
     return this;
@@ -1273,23 +821,11 @@
 
   NewExpression.prototype.transform = function (o) {
     var ty;
-
-    if (this.callee instanceof Identifier && (ty = o.types[this.callee.name])) {
-      var pty = new PointerType(ty)
-      var alloc = new CallExpression(o.scope.MALLOC(), [cast(new Literal(ty.size), u32ty)], this.loc);
-      alloc = cast(alloc.transform(o), pty);
-      var field = ty.getField(ty.name);
-      if (field) {
-        logger.push(this);
-        var tmp = o.scope.freshTemp(pty, this.loc);
-        var assignment = new AssignmentExpression(tmp, "=", alloc, this.loc);
-        var constructor = cast(new MemberExpression(new Identifier(ty.name + "$" + ty.name), new Identifier("call"), false), field.type, true);
-        var callConstructor = new CallExpression(constructor, [assignment].concat(this.arguments), this.loc).transform(o);
-        var val = new SequenceExpression([callConstructor, tmp], this.loc);
-        logger.pop();
-        return cast(val, pty, true);
-      }
-      return alloc;
+    
+    if (this.callee instanceof Identifier && this.arguments.length === 0 &&
+        (ty = o.types[this.callee.name])) {
+      var alloc = new CallExpression(o.scope.MALLOC(), [cast(new Literal(ty.size), Types.u32ty)], this.loc);
+      return cast(alloc.transform(o), new PointerType(ty));
     } else if (this.callee instanceof MemberExpression &&
                this.callee.computed &&
                (ty = o.types[this.callee.object.name])) {
@@ -1324,55 +860,6 @@
     }
   };
 
-  AssignmentExpression.prototype.transformNode = function (o) {
-    var lty = this.left.ty;
-    var rty = this.right.ty;
-
-    if (!lty) {
-      return;
-    }
-
-    var scope = o.scope;
-    var op = this.operator;
-
-    if (op !== "=") {
-      var binop = op.substr(0, op.indexOf("="));
-      var ref = scope.cacheReference(this.left);
-      var right = new BinaryExpression(binop, ref.use, this.right, this.right.loc);
-      return (new AssignmentExpression(ref.def, "=", right, this.loc)).transform(o);
-    }
-
-    check(lty.assignableFrom(rty), "incompatible types: assigning " +
-          quote(tystr(rty, 0)) + " to " + quote(tystr(lty, 0)));
-
-    if (lty instanceof StructType || lty instanceof UnionType) {
-      // Emit a memcpy using the largest alignment size we can.
-      var mc, size, pty;
-      if (lty.align === u32ty) {
-        mc = scope.MEMCPY(4);
-        size = lty.size / 4;
-      } else if (lty.align === u16ty) {
-        mc = scope.MEMCPY(2);
-        size = lty.size / 2;
-      } else {
-        mc = scope.MEMCPY(u8ty.size);
-        size = lty.size;
-      }
-      var left = new UnaryExpression("&", this.left, this.left.loc);
-      var right = new UnaryExpression("&", this.right, this.right.loc);
-      return cast(new CallExpression(mc, [left, right, new Literal(size)]), lty, this.loc).transform(o);
-    } else {
-      this.right = cast(this.right, lty);
-      return cast(this, lty);
-    }
-  };
-
-  function MemberFunctionCall (object, field) {
-    assert (object.ty instanceof PointerType);
-    this.object = object;
-    this.field = field;
-  }
-
   MemberExpression.prototype.transformNode = function (o) {
     var obj = this.object;
     var prop = this.property;
@@ -1400,35 +887,56 @@
 
     check(prop instanceof Identifier, "invalid property name.");
     var field = this.structField = oty.getField(prop.name);
-    check(field, "Unknown field " + quote(prop.name) + " of type " + quote(tystr(oty, 0)));
-
-    if (field.type instanceof ArrowType) {
-      if (!(obj.ty instanceof PointerType)) {
-        obj = new UnaryExpression("&", obj, this.loc).transform(o);
-      }
-      return new MemberFunctionCall(obj, field);
-    }
+    check(field, "Unknown field " + quote(prop.name) + " of type " + quote(Types.tystr(oty, 0)));
 
     return cast(this, field.type);
   };
 
-  CallExpression.prototype.transformNode = function (o) {
-    if (this.callee instanceof MemberFunctionCall) {
-      var callee = this.callee;
-      var obj = callee.object;
-      var field = callee.field;
-      var name = obj.ty.base.name + "$" + field.name;
-      var fn = cast(new MemberExpression (
-        new Identifier(name),
-        new Identifier("call")
-      ), field.type, true);
-      return new CallExpression (
-        fn, [this.callee.object].concat(this.arguments)
-      ).transform(o);
+  AssignmentExpression.prototype.transformNode = function (o) {
+    var lty = this.left.ty;
+    var rty = this.right.ty;
+
+    if (!lty) {
+      return;
     }
 
-    var fty = this.callee.ty;
+    var scope = o.scope;
+    var op = this.operator;
 
+    if (op !== "=") {
+      var binop = op.substr(0, op.indexOf("="));
+      var ref = scope.cacheReference(this.left);
+      var right = new BinaryExpression(binop, ref.use, this.right, this.right.loc);
+      return (new AssignmentExpression(ref.def, "=", right, this.loc)).transform(o);
+    }
+
+    check(lty.assignableFrom(rty), "incompatible types: assigning " +
+          quote(Types.tystr(rty, 0)) + " to " + quote(Types.tystr(lty, 0)));
+
+    if (lty instanceof StructType || lty instanceof UnionType) {
+      // Emit a memcpy using the largest alignment size we can.
+      var mc, size, pty;
+      if (lty.align === Types.u32ty) {
+        mc = scope.MEMCPY(4);
+        size = lty.size / 4;
+      } else if (lty.align === Types.u16ty) {
+        mc = scope.MEMCPY(2);
+        size = lty.size / 2;
+      } else {
+        mc = scope.MEMCPY(Types.u8ty.size);
+        size = lty.size;
+      }
+      var left = new UnaryExpression("&", this.left, this.left.loc);
+      var right = new UnaryExpression("&", this.right, this.right.loc);
+      return cast(new CallExpression(mc, [left, right, new Literal(size)]), lty, this.loc).transform(o);
+    } else {
+      this.right = cast(this.right, lty);
+      return cast(this, lty);
+    }
+  };
+
+  CallExpression.prototype.transformNode = function (o) {
+    var fty = this.callee.ty;
     if (!fty) {
       return;
     }
@@ -1437,8 +945,6 @@
 
     var paramTys = fty.paramTypes;
     var args = this.arguments;
-
-    check(paramTys.length === args.length, "Argument/parameter count mismatch, expected: " + paramTys.length, true);
 
     for (var i = 0, j = paramTys.length; i < j; i++) {
       var arg = args[i];
@@ -1449,7 +955,7 @@
           logger.push(arg);
         }
         check(pty.assignableFrom(aty), "incompatible types: passing " +
-              quote(tystr(aty, 0)) + " to " + quote(tystr(pty, 0)));
+              quote(Types.tystr(aty, 0)) + " to " + quote(Types.tystr(pty, 0)));
         logger.pop();
         args[i] = cast(arg, pty);
       }
@@ -1473,7 +979,7 @@
 
     if (!force) {
       check(!(rty instanceof PointerType), "conversion from pointer to " +
-            quote(tystr(rty, 0)) + " without cast", true);
+            quote(Types.tystr(rty, 0)) + " without cast", true);
     }
 
     if (!this.numeric) {
@@ -1534,9 +1040,9 @@
         return expr;
       }
 
-      errorPrefix = "constant conversion to " + quote(tystr(this, 0)) + " alters its ";
+      errorPrefix = "constant conversion to " + quote(Types.tystr(this, 0)) + " alters its ";
     } else {
-      errorPrefix = "conversion from " + quote(tystr(rty, 0)) + " to " + quote(tystr(this, 0)) + " may alter its ";
+      errorPrefix = "conversion from " + quote(Types.tystr(rty, 0)) + " to " + quote(Types.tystr(this, 0)) + " may alter its ";
     }
 
     // Allow conversions from dyn without warning.
@@ -1577,15 +1083,15 @@
     if (this === rty || !(rty instanceof PointerType)) {
       if (!force) {
         check(!(rty instanceof PrimitiveType && rty.integral), "conversion from " +
-              quote(tystr(rty, 0)) + " to pointer without cast", true);
+              quote(Types.tystr(rty, 0)) + " to pointer without cast", true);
       }
       return expr;
     }
 
     if (warn.conversion) {
       check(rty.base.align.size >= this.base.align.size, "incompatible pointer conversion from " +
-            rty.base.align.size + "-byte aligned " + quote(tystr(rty, 0)) + " to " +
-            this.base.align.size + "-byte aligned " + quote(tystr(this, 0)), true);
+            rty.base.align.size + "-byte aligned " + quote(Types.tystr(rty, 0)) + " to " +
+            this.base.align.size + "-byte aligned " + quote(Types.tystr(this, 0)), true);
     }
 
     return realign(expr, this.base.align.size);
@@ -1671,8 +1177,8 @@
         variables.push(v);
       }
     }
-
-
+    
+      
 
     // Do this after the SP calculation since it might bring in U4. Since this
     // is after, we need to unshift.
@@ -1720,7 +1226,7 @@
     }
     return translist;
   }
-
+  
 
   Node.prototype.lower = T.makePass("lower", "lowerNode");
 
@@ -1735,28 +1241,28 @@
 
     return this;
   };
-
+  
   FunctionExpression.prototype.lower =
   FunctionDeclaration.prototype.lower = function (o) {
     var memcheckName;
     o = extend(o);
     o.scope = this.frame;
 
-    if (o.memcheck) {
-      if (this.id && this.id.name) {
+    if(o.memcheck) {
+      if(this.id && this.id.name) {
         memcheckName = this.id.name;
       } else {
         memcheckName = "<anonymous>";
       }
       this.frame.memcheckFnLoc = {name: memcheckName, line: this.loc.start.line, column: this.loc.start.column};
-      this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(),
+      this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(), 
                                                                         [new Literal(memcheckName),
                                                                          new Literal(o.name),
                                                                          new Literal(this.loc.start.line),
                                                                          new Literal(this.loc.start.column)])));
-
-      if (this.body.body[this.body.body.length-1].type !== 'ReturnStatement') {
-         this.body.body.push(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_POP(), [])));
+      
+      if(this.body.body[this.body.body.length-1].type !== 'ReturnStatement') {
+        this.body.body.push(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_POP(), [])));
       }
     }
     this.body.body = lowerList(this.body.body, o);
@@ -1780,7 +1286,7 @@
     this.body = lowerList(this.body, o);
     return this;
   };
-
+  
   function findParentFun(scope) {
     var name;
     while(scope.parent) {
@@ -1789,14 +1295,14 @@
       }
     }
   }
-
+  
   CatchClause.prototype.lower = function(o) {
     o = extend(o);
     if(o.memcheck) {
       var fnLoc = o.scope.frame.memcheckFnLoc;
-      this.body.body.unshift(new ExpressionStatement(new CallExpression(o.scope.frame.MEMCHECK_CALL_RESET(),
-                                                                        [new Literal(fnLoc.name),
-                                                                         new Literal(fnLoc.line),
+      this.body.body.unshift(new ExpressionStatement(new CallExpression(o.scope.frame.MEMCHECK_CALL_RESET(), 
+                                                                        [new Literal(fnLoc.name), 
+                                                                         new Literal(fnLoc.line), 
                                                                          new Literal(fnLoc.column)])));
     }
     return Node.prototype.lower.call(this, o);
@@ -1900,9 +1406,9 @@
     lowered.ty = this.ty;
     return lowered;
   };
+  
 
-
-
+  
   /**
    * Driver
    */
@@ -1916,7 +1422,7 @@
     var cachedMEMORY = program.frame.cachedMEMORY;
     if (cachedMEMORY) {
       var mdecl;
-      // todo: causes all files named "memory.ljs" to be compiled with the memory
+      // todo: causes all files named "memory.ljs" to be compiled with the memory 
       // var pointing at exports, probably want a better way of doing that...
       if (name === "memory") {
         mdecl = new VariableDeclarator(cachedMEMORY, new Identifier("exports"));
@@ -1932,17 +1438,17 @@
       if(name !== "memory") {
         assert (memcheck !== undefined);
         body.push(new ExpressionStatement(
-          new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")),
+          new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")), 
                              [new Literal(memcheck)])));
       }
-
+      
     }
 
     if (bare) {
       program.body = body.concat(program.body);
       return program;
     }
-
+    
     body = new BlockStatement(body.concat(program.body));
     var mname = name.replace(/[^\w]/g, "_");
     if (mname.match(/^[0-9]/)) {
@@ -1980,18 +1486,15 @@
     node = T.lift(node);
 
     // Pass 1.
-
-    logger.info("Pass 1");
-    var types = resolveAndLintTypes(node, clone(builtinTypes));
+    var types = resolveAndLintTypes(node, clone(Types.builtinTypes));
     var o = { types: types, name: name, logger: _logger, warn: warningOptions(options), memcheck: options.memcheck };
+
     // Pass 2.
-    logger.info("Pass 2");
     node.scan(o);
+
     // Pass 3.
-    logger.info("Pass 3");
     node = node.transform(o);
     // Pass 4.
-    logger.info("Pass 4");
     node = node.lower(o);
 
     return T.flatten(createModule(node, name, options.bare, options["load-instead"], options.memcheck));
