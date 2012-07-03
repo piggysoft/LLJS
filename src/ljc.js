@@ -121,7 +121,7 @@
 
     var p = optparser.parse(argv);
     if (!p) {
-      quit();
+      quit(1);
     }
 
     var options = p.options;
@@ -147,7 +147,7 @@
     } else {
       // SpiderMonkey has no way to write to a file, but if we're on node we can
       // emit .js.
-      if (mode === NODE_JS) {
+      if (mode === NODE_JS && !options["only-parse"]) {
         var outname = (dir ? dir + "/" : "") + basename;
         if (options["emit-ast"]) {
           require('fs').writeFileSync(outname + ".json", JSON.stringify(code, null, 2));
@@ -199,14 +199,14 @@
         e.loc = { start: lc, end: lc };
         logger.error(e.message, { start: lc, end: lc });
         logger.flush();
-        quit();
+        quit(1);
       }
 
       if (e.logged && mode !== BROWSER) {
         // Compiler error that has already been logged, so just flush and
         // quit.
         logger.flush();
-        quit();
+        quit(1);
       }
 
       throw e;
