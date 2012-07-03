@@ -121,7 +121,7 @@
 
     var p = optparser.parse(argv);
     if (!p) {
-      quit(1);
+      quit();
     }
 
     var options = p.options;
@@ -199,14 +199,14 @@
         e.loc = { start: lc, end: lc };
         logger.error(e.message, { start: lc, end: lc });
         logger.flush();
-        quit(1);
+        quit();
       }
 
       if (e.logged && mode !== BROWSER) {
         // Compiler error that has already been logged, so just flush and
         // quit.
         logger.flush();
-        quit(1);
+        quit();
       }
 
       throw e;
