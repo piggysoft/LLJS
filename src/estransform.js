@@ -267,11 +267,6 @@
       fields: ["@id", "@fields"]
     },
 
-    UnionType: {
-      extends: "Type",
-      fields: ["@id", "@fields"]
-    },
-
     FieldDeclarator: {
       extends: "Node",
       fields: ["@id", "@decltype"]
