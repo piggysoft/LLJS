@@ -642,15 +642,7 @@
           types[alias] = types[s.original.id.name] = s.original.construct();
           aliases.push(s.original.id.name);
         } else {
-          if (s.original instanceof T.TypeIdentifier && s.original.name) {
-            logger.push(s);
-            check(types[s.original.name],
-                  "Type of " + s.original.name + " must be defined before this typedef");
-            types[alias] = types[s.original.name];
-            logger.pop(s);
-          } else {
-            types[alias] = s.original.construct();
-          }
+          types[alias] = s.original.construct();
         }
         aliases.push(alias);
       } else if (s instanceof T.StructType && s.id) {
@@ -662,7 +654,9 @@
     for (var i = 0, j = aliases.length; i < j; i++) {
       ty = types[aliases[i]];
       logger.push(ty.node);
-      ty.resolve(types).lint();
+      ty = ty.resolve(types);
+      ty.lint();
+      types[aliases[i]] = ty;
       logger.pop();
     }
 
