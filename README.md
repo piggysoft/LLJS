@@ -1,7 +1,7 @@
 LLJS
 ====
 
-LLJS is a typed dialect of JavaScript that offers a
+LLJS (formerly known as *JS) is a typed dialect of JavaScript that offers a
 C-like type system with manual memory management. It compiles to JavaScript
 and lets you write memory-efficient and GC pause-free code less painfully, in
 short, LLJS is the bastard child of JavaScript and C. LLJS is early research
@@ -20,26 +20,3 @@ For users of node.js, `bin/ljc` is provided.
 For users of SpiderMonkey `js` shell, the compiler can be invoked with:
 
     $ js src/ljc.js
-
-
-Memcheck
-========
-
-If you would like to compile with support for memory checking (detects
-leaks, accesses of unallocated and undefined memory locations, and
-double frees) then compile with the -m flag:
-
-    $ bin/ljc -m myscript.ljs
-
-And add the following code to the end of your program run to report
-any memory errors:
-
-    let m = require('memory);
-    // for SpiderMonkey do
-    // let m = load('memory.js')
-    console.log(m.memcheck.report());  
-
-The memory checker uses Proxies so if you use node.js you need to
-enable it with:
-
-    $ node --harmony-proxies myscript.ljs

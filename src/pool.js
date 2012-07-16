@@ -1,9 +1,3 @@
-extern Uint16Array;
-extern Uint32Array;
-extern Math;
-extern undefined;
-extern Object;
-
 /**
  * We cannot store references to JavaScript objects in the LLJS heap. We need a way to
  * manage all the JS objects that enter the LLJS heap using some kind of reference counting
@@ -27,24 +21,24 @@ extern Object;
  *
  */
 
-let Pool = (function (initialSize) {
+var Pool = (function (initialSize) {
 
-  let obj = []; /* ID to Object Map */
-  let ref; /* Reference Count Map */
-  let bit; /* Used ID Bit Map */
+  var obj = []; /* ID to Object Map */
+  var ref; /* Reference Count Map */
+  var bit; /* Used ID Bit Map */
 
-  let size = 0;
-  let resizeCount = 0;
+  var size = 0;
+  var resizeCount = 0;
 
   const MIN_SIZE = 1024;
 
   function resize(newSize) {
-    let oldRef = ref;
+    var oldRef = ref;
     ref = new Uint16Array(newSize);
     if (oldRef) {
       ref.set(oldRef);
     }
-    let oldBit = bit;
+    var oldBit = bit;
     bit = new Uint32Array(Math.ceil(newSize / 32));
     if (oldBit) {
       bit.set(oldBit);
@@ -96,17 +90,17 @@ let Pool = (function (initialSize) {
     return ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
   }
 
-  let nextWord = 0;
+  var nextWord = 0;
 
   /**
    * Finds the next available ID by scanning the bit map.
    */
   function nextID() {
-    let cur = nextWord;
-    let end = bit.length;
+    var cur = nextWord;
+    var end = bit.length;
     while (true) {
-      for (let i = cur, j = end; i < j; i++) {
-        let word = bit[i];
+      for (var i = cur, j = end; i < j; i++) {
+        var word = bit[i];
         if (word === 0xFFFFFFFF) {
           continue;
         } else if (word === 0) {
@@ -114,7 +108,7 @@ let Pool = (function (initialSize) {
           nextWord = i;
           return i << 5;
         } else {
-          let fz = firstZero(word);
+          var fz = firstZero(word);
           bit[i] |= 1 << fz;
           nextWord = i;
           return (i << 5) + fz;
@@ -143,7 +137,7 @@ let Pool = (function (initialSize) {
    * Adds an object to the pool if it doesn't exist and increments its reference count by one.
    */
   function acquire(o) {
-    let id = o[OBJECT_ID_NAME];
+    var id = o[OBJECT_ID_NAME];
     if (id === undefined) {
       id = nextID();
       if (tidy) {
@@ -178,7 +172,7 @@ let Pool = (function (initialSize) {
     }
     if (--ref[id] === 0) {
       freeID(id);
-      let o = obj[id];
+      var o = obj[id];
       obj[id] = null;
       if (tidy) {
         delete o[OBJECT_ID_NAME];
@@ -195,8 +189,8 @@ let Pool = (function (initialSize) {
   function trace() {
 
     function getSizeName(v) {
-      let KB = 1024;
-      let MB = 1024 * KB;
+      var KB = 1024;
+      var MB = 1024 * KB;
 
       if (v / MB > 1) {
         return (v / MB).toFixed(2) + " M";
@@ -207,16 +201,16 @@ let Pool = (function (initialSize) {
       }
     }
 
-    trace("      ID Map: " + getSizeName(bit.length * 4) + "B");
-    trace("   Count Map: " + getSizeName(ref.length * 2) + "B");
-    trace("  Object Map: " + obj.length);
-    trace("Resize Count: " + resizeCount);
+    print("      ID Map: " + getSizeName(bit.length * 4) + "B");
+    print("   Count Map: " + getSizeName(ref.length * 2) + "B");
+    print("  Object Map: " + obj.length);
+    print("Resize Count: " + resizeCount);
 
-    let count = 0;
-    for (let i = 0; i < bit.length; i++) {
+    var count = 0;
+    for (var i = 0; i < bit.length; i++) {
       count += bitCount(bit[i]);
     }
-    trace("Object Map Density: " + ((count / (bit.length * 32)) * 100).toFixed(2) + " %");
+    print("Object Map Density: " + ((count / (bit.length * 32)) * 100).toFixed(2) + " %");
   }
 
   return {
@@ -229,8 +223,23 @@ let Pool = (function (initialSize) {
 
 })(1024);
 
-exports.acquire = Pool.acquire;
-exports.release = Pool.release;
-exports.releaseByID = Pool.releaseByID;
-exports.trace = Pool.trace;
-exports.get = Pool.get;
+if (true) {
+  var acquire = Pool.acquire;
+  var release = Pool.release;
+
+  var test = [];
+  for (var i = 0; i < 100000; i++) {
+    test[i] = {i: i};
+  }
+
+  for (var i = 0; i < 4000000; i++) {
+    var j = (Math.random() * test.length) | 0;
+    var k = acquire(test[j]);
+
+    j = (Math.random() * test.length) | 0;
+    k = test[j];
+    release(k);
+  }
+
+  Pool.trace();
+}
