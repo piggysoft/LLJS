@@ -227,7 +227,7 @@
   const spTy = new PointerType(u32ty);
 
   const mallocTy = new ArrowType([u32ty], bytePointerTy);
-  const freeTy = new ArrowType([undefined], voidTy);
+  const freeTy = new ArrowType([bytePointerTy], voidTy);
 
   function createMemcpyType(pointerTy) {
     return new ArrowType([pointerTy, pointerTy, u32ty], pointerTy);
@@ -1659,6 +1659,7 @@
       this.frame.memcheckFnLoc = {name: memcheckName, line: this.loc.start.line, column: this.loc.start.column};
       this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(), 
                                                                         [new Literal(memcheckName),
+                                                                         new Literal(o.name),
                                                                          new Literal(this.loc.start.line),
                                                                          new Literal(this.loc.start.column)])));
       
@@ -1837,7 +1838,6 @@
       body.push(new VariableDeclaration("const", [mdecl]));
       // todo: broken just like above
       if(name !== "memory") {
-        assert (memcheck !== undefined);
         body.push(new ExpressionStatement(
           new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")), 
                              [new Literal(memcheck)])));
