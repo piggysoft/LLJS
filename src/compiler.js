@@ -81,7 +81,6 @@
   const TypeAlias = Types.TypeAlias;
   const PrimitiveType = Types.PrimitiveType;
   const StructType = Types.StructType;
-  const UnionType = Types.UnionType;
   const PointerType = Types.PointerType;
   const ArrowType = Types.ArrowType;
 
@@ -138,15 +137,7 @@
     ty.fields = this.fields.map(function (f) {
       return { name: f.id.name, type: f.decltype.construct() };
     });
-    return ty;
-  };
-
-  T.UnionType.prototype.construct = function () {
-    var ty = new UnionType(this.id ? this.id.name : undefined);
-    ty.node = this;
-    ty.fields = this.fields.map(function (f) {
-      return { name: f.id.name, type: f.decltype.construct() };
-    });
+    ty.isUnion = this.isUnion;
     return ty;
   };
 
@@ -213,23 +204,6 @@
     return this;
   };
 
-  UnionType.prototype.resolve = function (types) {
-    if (this._resolved) {
-      return this;
-    }
-
-    startResolving(this);
-    var field, fields = this.fields;
-    for (var i = 0, j = fields.length; i < j; i++) {
-      field = fields[i];
-      if (field.type) {
-        field.type = field.type.resolve(types);
-      }
-    }
-    finishResolving(this);
-    return this;
-  };
-
   ArrowType.prototype.resolve = function (types) {
     if (this._resolved) {
       return this;
@@ -274,31 +248,14 @@
         maxAlignSize = type.align.size;
         maxAlignSizeType = type.align;
       }
-      field.offset = alignTo(prev.offset + prev.type.size, type.size);
-      prev = field;
+      if (this.isUnion) {
+        field.offset = 0;
+      } else {
+        field.offset = alignTo(prev.offset + prev.type.size, type.size);
+        prev = field;
+      }
     }
     this.size = alignTo(field.offset + type.size, maxAlignSize);
-    this.align = maxAlignSizeType;
-  };
-
-  UnionType.prototype.lint = function () {
-    var maxAlignSize = 1;
-    var maxAlignSizeType = Types.u8ty;
-    var fields = this.fields
-    var field, type;
-    for (var i = 0, j = fields.length; i < j; i++) {
-      field = fields[i];
-      type = field.type;
-      check(type, "cannot have untyped field");
-      check(type.size, "cannot have fields of size 0 type " + quote(Types.tystr(type, 0)));
-
-      if (type.align.size > maxAlignSize) {
-        maxAlignSize = type.align.size;
-        maxAlignSizeType = type.align;
-      }
-      field.offset = 0;
-    }
-    this.size = maxAlignSize;
     this.align = maxAlignSizeType;
   };
 
@@ -322,14 +279,14 @@
       s = stmts[i];
       if (s instanceof TypeAliasDirective) {
         alias = s.alias.name;
-        if ((s.original instanceof T.StructType || s.original instanceof UnionType) && s.original.id) {
+        if ((s.original instanceof T.StructType) && s.original.id) {
           types[alias] = types[s.original.id.name] = s.original.construct();
           aliases.push(s.original.id.name);
         } else {
           types[alias] = s.original.construct();
         }
         aliases.push(alias);
-      } else if ((s instanceof T.StructType || s instanceof T.UnionType) && s.id) {
+      } else if ((s instanceof T.StructType) && s.id) {
         types[s.id.name] = s.construct();
         aliases.push(s.id.name);
       }
@@ -386,9 +343,9 @@
   };
 
   TypeAliasDirective.prototype.scan = function (o) {
+    var scope = new Frame(o.scope, "Struct " + this.original.id.name);;
+    var thisTy = new PointerType(o.types[this.original.id.name]);
     if (this.original instanceof T.StructType) {
-      var thisTy = new PointerType(o.types[this.original.id.name]);
-      var scope = new Frame(o.scope, "Struct " + this.original.id.name);;
       var fields = this.original.fields;
       for (var i = 0; i < fields.length; i++) {
         if (fields[i] instanceof FunctionDeclaration) {
@@ -516,10 +473,6 @@
     return this === other;
   };
 
-  UnionType.prototype.assignableFrom = function (other) {
-    return this === other;
-  };
-
   PointerType.prototype.assignableFrom = function (other) {
     if (other === Types.nullTy
         || (other instanceof PointerType && this.base.assignableFrom(other.base))
@@ -598,10 +551,7 @@
         }
       }
     }
-    if (functions.length) {
-      return new BlockStatement(functions);
-    }
-    return null;
+    return new BlockStatement(functions);
   };
 
   Program.prototype.transform = function (o) {
@@ -921,7 +871,7 @@
     check(lty.assignableFrom(rty), "incompatible types: assigning " +
           quote(Types.tystr(rty, 0)) + " to " + quote(Types.tystr(lty, 0)));
 
-    if (lty instanceof StructType || lty instanceof UnionType) {
+    if (lty instanceof StructType) {
       // Emit a memcpy using the largest alignment size we can.
       var mc, size, pty;
       if (lty.align === Types.u32ty) {
@@ -964,12 +914,12 @@
     }
 
     if (this.kind === "->") {
-      check(oty instanceof PointerType && (oty.base instanceof StructType || oty.base instanceof UnionType),
+      check(oty instanceof PointerType && (oty.base instanceof StructType),
             "base of struct dereference must be struct or union type.");
       oty = oty.base;
     } else {
       check(!(oty instanceof PointerType), "cannot use . operator on pointer type.");
-      if (!(oty instanceof StructType || oty instanceof UnionType)) {
+      if (!(oty instanceof StructType)) {
         return;
       }
     }
@@ -1172,10 +1122,6 @@
   };
 
   StructType.prototype.convert = function (expr) {
-    return expr;
-  };
-
-  UnionType.prototype.convert = function (expr) {
     return expr;
   };
 
