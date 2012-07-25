@@ -204,6 +204,9 @@
       field = fields[i];
       if (field.type) {
         field.type = field.type.resolve(types);
+        if (field.type instanceof ArrowType) {
+          field.type.paramTypes.unshift(new PointerType(this));
+        }
       }
     }
     finishResolving(this);
@@ -256,8 +259,14 @@
     var field, type;
     var prev = { offset: 0, type: { size: 0 } };
     for (var i = 0, j = fields.length; i < j; i++) {
+      if (fields[i].type instanceof ArrowType) {
+        // Ignore member functions.
+        continue;
+      }
+
       field = fields[i];
       type = field.type;
+
       check(type, "cannot have untyped field");
       check(type.size, "cannot have fields of size 0 type " + quote(Types.tystr(type, 0)));
 
@@ -376,6 +385,25 @@
     return this;
   };
 
+  TypeAliasDirective.prototype.scan = function (o) {
+    var scope;
+    var thisTy = new PointerType(o.types[this.original.id.name]);
+    if (this.original instanceof T.StructType) {
+      var fields = this.original.fields;
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i] instanceof FunctionDeclaration) {
+          if (!scope) {
+            scope = new Frame(o.scope, "Struct " + this.original.id.name);
+          }
+          o = extend(o, { thisTy: thisTy });
+          o.scope = scope;
+          fields[i].scan(o);
+        }
+      }
+    }
+    return this;
+  }
+
   FunctionExpression.prototype.scan =
   FunctionDeclaration.prototype.scan = function (o) {
     logger.push(this);
@@ -395,6 +423,10 @@
     scope = new Frame(scope, "Function " + (this.id ? this.id.name : "anonymous"));
     scope.returnType = ty.returnType;
     o.scope = this.frame = scope;
+
+    if (o.thisTy) {
+      scope.addVariable(new Variable("this", o.thisTy));
+    }
 
     var params = this.params;
     var parameters = this.parameters = [];
@@ -556,10 +588,20 @@
     }
     return translist;
   }
-  
 
-  TypeAliasDirective.prototype.transform = function () {
-    return null;
+  TypeAliasDirective.prototype.transform = function (o) {
+    var functions = [];
+    if (this.original instanceof T.StructType) {
+      var fields = this.original.fields;
+      for (var i = 0; i < fields.length; i++) {
+        var field = fields[i];
+        if (field instanceof FunctionDeclaration) {
+          field.id.name = this.original.id.name + "$" + field.id.name;
+          functions.push(field.transform(o));
+        }
+      }
+    }
+    return new BlockStatement(functions);
   };
 
   Program.prototype.transform = function (o) {
@@ -575,7 +617,7 @@
     o = extend(o);
     o.scope = this.frame;
 
-    
+
     assert(this.body instanceof BlockStatement);
     this.body.body = compileList(this.body.body, o);
 
@@ -620,6 +662,14 @@
 
     if (typeof this.value === "number") {
       return cast(this, isInteger(this.value) ? Types.i32ty : Types.f64ty);
+    }
+  };
+
+  ThisExpression.prototype.transformNode = function (o) {
+    var scope = o.scope;
+    var variable = scope.getVariable("this");
+    if (variable) {
+      return cast(this, variable.type);
     }
   };
 
@@ -786,11 +836,23 @@
 
   NewExpression.prototype.transform = function (o) {
     var ty;
-    
-    if (this.callee instanceof Identifier && this.arguments.length === 0 &&
-        (ty = o.types[this.callee.name])) {
-      var alloc = new CallExpression(o.scope.MALLOC(), [cast(new Literal(ty.size), Types.u32ty)], this.loc);
-      return cast(alloc.transform(o), new PointerType(ty));
+
+    if (this.callee instanceof Identifier && (ty = o.types[this.callee.name])) {
+      var pty = new PointerType(ty)
+      var alloc = new CallExpression(o.scope.MALLOC(), [cast(new Literal(ty.size), u32ty)], this.loc);
+      alloc = cast(alloc.transform(o), pty);
+      var field = ty.getField(ty.name);
+      if (field) {
+        logger.push(this);
+        var tmp = o.scope.freshTemp(pty, this.loc);
+        var assignment = new AssignmentExpression(tmp, "=", alloc, this.loc);
+        var constructor = cast(new MemberExpression(new Identifier(ty.name + "$" + ty.name), new Identifier("call"), false), field.type, true);
+        var callConstructor = new CallExpression(constructor, [assignment].concat(this.arguments), this.loc).transform(o);
+        var val = new SequenceExpression([callConstructor, tmp], this.loc);
+        logger.pop();
+        return cast(val, pty, true);
+      }
+      return alloc;
     } else if (this.callee instanceof MemberExpression &&
                this.callee.computed &&
                (ty = o.types[this.callee.object.name])) {
@@ -823,38 +885,6 @@
       var incdec = (new AssignmentExpression(ref.use, "=", right, this.loc)).transform(o);
       return cast(new SequenceExpression([assn, incdec, t], this.loc), ty);
     }
-  };
-
-  MemberExpression.prototype.transformNode = function (o) {
-    var obj = this.object;
-    var prop = this.property;
-    var oty = obj.ty;
-
-    if (!oty) {
-      return;
-    }
-
-    if (this.computed) {
-      check(oty instanceof PointerType, "cannot use [] operator on non-pointer type.");
-      return new UnaryExpression("*", new BinaryExpression("+", obj, prop)).transform(o);
-    }
-
-    if (this.kind === "->") {
-      check(oty instanceof PointerType && (oty.base instanceof StructType || oty.base instanceof UnionType),
-            "base of struct dereference must be struct or union type.");
-      oty = oty.base;
-    } else {
-      check(!(oty instanceof PointerType), "cannot use . operator on pointer type.");
-      if (!(oty instanceof StructType || oty instanceof UnionType)) {
-        return;
-      }
-    }
-
-    check(prop instanceof Identifier, "invalid property name.");
-    var field = this.structField = oty.getField(prop.name);
-    check(field, "Unknown field " + quote(prop.name) + " of type " + quote(Types.tystr(oty, 0)));
-
-    return cast(this, field.type);
   };
 
   AssignmentExpression.prototype.transformNode = function (o) {
@@ -900,8 +930,68 @@
     }
   };
 
+  function MemberFunctionCall (object, field) {
+    assert (object.ty instanceof PointerType);
+    this.object = object;
+    this.field = field;
+  }
+
+  MemberExpression.prototype.transformNode = function (o) {
+    var obj = this.object;
+    var prop = this.property;
+    var oty = obj.ty;
+
+    if (!oty) {
+      return;
+    }
+
+    if (this.computed) {
+      check(oty instanceof PointerType, "cannot use [] operator on non-pointer type.");
+      return new UnaryExpression("*", new BinaryExpression("+", obj, prop)).transform(o);
+    }
+
+    if (this.kind === "->") {
+      check(oty instanceof PointerType && (oty.base instanceof StructType || oty.base instanceof UnionType),
+            "base of struct dereference must be struct or union type.");
+      oty = oty.base;
+    } else {
+      check(!(oty instanceof PointerType), "cannot use . operator on pointer type.");
+      if (!(oty instanceof StructType || oty instanceof UnionType)) {
+        return;
+      }
+    }
+
+    check(prop instanceof Identifier, "invalid property name.");
+    var field = this.structField = oty.getField(prop.name);
+    check(field, "Unknown field " + quote(prop.name) + " of type " + quote(tystr(oty, 0)));
+
+    if (field.type instanceof ArrowType) {
+      if (!(obj.ty instanceof PointerType)) {
+        obj = new UnaryExpression("&", obj, this.loc).transform(o);
+      }
+      return new MemberFunctionCall(obj, field);
+    }
+
+    return cast(this, field.type);
+  };
+
   CallExpression.prototype.transformNode = function (o) {
+    if (this.callee instanceof MemberFunctionCall) {
+      var callee = this.callee;
+      var obj = callee.object;
+      var field = callee.field;
+      var name = obj.ty.base.name + "$" + field.name;
+      var fn = cast(new MemberExpression (
+        new Identifier(name),
+        new Identifier("call")
+      ), field.type, true);
+      return new CallExpression (
+        fn, [this.callee.object].concat(this.arguments)
+      ).transform(o);
+    }
+
     var fty = this.callee.ty;
+
     if (!fty) {
       return;
     }
@@ -910,6 +1000,8 @@
 
     var paramTys = fty.paramTypes;
     var args = this.arguments;
+
+    check(paramTys.length === args.length, "Argument/parameter count mismatch, expected: " + paramTys.length, true);
 
     for (var i = 0, j = paramTys.length; i < j; i++) {
       var arg = args[i];
@@ -1100,8 +1192,8 @@
         variables.push(v);
       }
     }
-    
-      
+
+
 
     // Do this after the SP calculation since it might bring in U4. Since this
     // is after, we need to unshift.
@@ -1149,7 +1241,7 @@
     }
     return translist;
   }
-  
+
 
   Node.prototype.lower = T.makePass("lower", "lowerNode");
 
@@ -1164,28 +1256,28 @@
 
     return this;
   };
-  
+
   FunctionExpression.prototype.lower =
   FunctionDeclaration.prototype.lower = function (o) {
     var memcheckName;
     o = extend(o);
     o.scope = this.frame;
 
-    if(o.memcheck) {
-      if(this.id && this.id.name) {
+    if (o.memcheck) {
+      if (this.id && this.id.name) {
         memcheckName = this.id.name;
       } else {
         memcheckName = "<anonymous>";
       }
       this.frame.memcheckFnLoc = {name: memcheckName, line: this.loc.start.line, column: this.loc.start.column};
-      this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(), 
+      this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(),
                                                                         [new Literal(memcheckName),
                                                                          new Literal(o.name),
                                                                          new Literal(this.loc.start.line),
                                                                          new Literal(this.loc.start.column)])));
-      
-      if(this.body.body[this.body.body.length-1].type !== 'ReturnStatement') {
-        this.body.body.push(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_POP(), [])));
+
+      if (this.body.body[this.body.body.length-1].type !== 'ReturnStatement') {
+         this.body.body.push(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_POP(), [])));
       }
     }
     this.body.body = lowerList(this.body.body, o);
@@ -1209,7 +1301,7 @@
     this.body = lowerList(this.body, o);
     return this;
   };
-  
+
   function findParentFun(scope) {
     var name;
     while(scope.parent) {
@@ -1218,14 +1310,14 @@
       }
     }
   }
-  
+
   CatchClause.prototype.lower = function(o) {
     o = extend(o);
     if(o.memcheck) {
       var fnLoc = o.scope.frame.memcheckFnLoc;
-      this.body.body.unshift(new ExpressionStatement(new CallExpression(o.scope.frame.MEMCHECK_CALL_RESET(), 
-                                                                        [new Literal(fnLoc.name), 
-                                                                         new Literal(fnLoc.line), 
+      this.body.body.unshift(new ExpressionStatement(new CallExpression(o.scope.frame.MEMCHECK_CALL_RESET(),
+                                                                        [new Literal(fnLoc.name),
+                                                                         new Literal(fnLoc.line),
                                                                          new Literal(fnLoc.column)])));
     }
     return Node.prototype.lower.call(this, o);
@@ -1329,9 +1421,9 @@
     lowered.ty = this.ty;
     return lowered;
   };
-  
 
-  
+
+
   /**
    * Driver
    */
@@ -1345,7 +1437,7 @@
     var cachedMEMORY = program.frame.cachedMEMORY;
     if (cachedMEMORY) {
       var mdecl;
-      // todo: causes all files named "memory.ljs" to be compiled with the memory 
+      // todo: causes all files named "memory.ljs" to be compiled with the memory
       // var pointing at exports, probably want a better way of doing that...
       if (name === "memory") {
         mdecl = new VariableDeclarator(cachedMEMORY, new Identifier("exports"));
@@ -1361,17 +1453,17 @@
       if(name !== "memory") {
         assert (memcheck !== undefined);
         body.push(new ExpressionStatement(
-          new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")), 
+          new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")),
                              [new Literal(memcheck)])));
       }
-      
+
     }
 
     if (bare) {
       program.body = body.concat(program.body);
       return program;
     }
-    
+
     body = new BlockStatement(body.concat(program.body));
     var mname = name.replace(/[^\w]/g, "_");
     if (mname.match(/^[0-9]/)) {
@@ -1409,15 +1501,20 @@
     node = T.lift(node);
 
     // Pass 1.
+
+    logger.info("Pass 1");
     var types = resolveAndLintTypes(node, clone(Types.builtinTypes));
     var o = { types: types, name: name, logger: _logger, warn: warningOptions(options), memcheck: options.memcheck };
 
     // Pass 2.
+    logger.info("Pass 2");
     node.scan(o);
 
     // Pass 3.
+    logger.info("Pass 3");
     node = node.transform(o);
     // Pass 4.
+    logger.info("Pass 4");
     node = node.lower(o);
 
     return T.flatten(createModule(node, name, options.bare, options["load-instead"], options.memcheck));
