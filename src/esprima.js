@@ -282,7 +282,7 @@
   }
 
   function toType(expr) {
-    if (expr.type === Syntax.Identifier && expr.name in Types) {
+    if (expr.type === Syntax.Identifier && Types.hasOwnProperty(expr.name)) {
       return {
         type: Syntax.TypeIdentifier,
         name: expr.name
@@ -2019,7 +2019,7 @@
   // 11.11 Binary Logical Operators
 
   function parseLogicalANDExpression() {
-    var expr = parseBitwiseXORExpression();
+    var expr = parseBitwiseORExpression();
 
     while (match('&&')) {
       lex();
@@ -2027,7 +2027,7 @@
         type: Syntax.LogicalExpression,
         operator: '&&',
         left: expr,
-        right: parseBitwiseXORExpression()
+        right: parseBitwiseORExpression()
       };
     }
 
