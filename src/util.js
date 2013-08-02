@@ -12,7 +12,6 @@
   const BinaryExpression = T.BinaryExpression;
   const Literal = T.Literal;
   const MemberExpression = T.MemberExpression;
-  const SequenceExpression = T.SequenceExpression;
 
 
   function realign(expr, lalign) {
@@ -50,10 +49,9 @@
 
   function dereference(address, byteOffset, ty, scope, loc) {
     assert(scope);
-    address = copy(address, address.ty);
     address = alignAddress(address, byteOffset, ty);
     var expr;
-    if (ty instanceof Types.ArrayType) {
+    if (ty.arraySize) {
       expr = address;
     } else {
       expr = new MemberExpression(scope.getView(ty), address, true, loc);
@@ -134,12 +132,6 @@
       node = new CastExpression(undefined, node, node.loc);
       node.force = force;
     }
-    node.ty = ty;
-    return node;
-  }
-
-  function copy(node, ty) {
-    node = new SequenceExpression([node], node.loc);
     node.ty = ty;
     return node;
   }
@@ -282,11 +274,7 @@
           var s = spec[i];
           str += indent;
           if (s.name) {
-            if (s.short) {
-              str += flushLeft("-" + s.short, 4) + flushLeft("--" + s.name, 18);
-            } else {
-              str += flushLeft("", 4) + flushLeft("--" + s.name, 18);
-            }
+            str += flushLeft("-" + s.short, 4) + flushLeft("--" + s.name, 18);
           } else {
             str += flushLeft("-" + s.short, 22);
           }

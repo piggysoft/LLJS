@@ -1049,7 +1049,7 @@
             break;
 
         case Syntax.DoWhileStatement:
-            result = join('do', maybeBlock(stmt.body));
+            result = 'do' + maybeBlock(stmt.body);
             result += maybeBlockSuffix(stmt.body, result);
             result += 'while' + space + '(' + generateExpression(stmt.test, {
                 precedence: Precedence.Sequence,
@@ -1571,14 +1571,7 @@
         VariableDeclaration: ['declarations'],
         VariableDeclarator: ['id', 'init'],
         WhileStatement: ['test', 'body'],
-        WithStatement: ['object', 'body'],
-        PointerType: ['base'],
-        StructType: ['id', 'fields'],
-        FieldDeclarator: ['id', 'decltype'],
-        ArrowType: ['params', 'return'],
-        TypeIdentifier: [],
-        TypeAliasDirective: ['original', 'alias'],
-        CastExpression: ['as', 'argument']
+        WithStatement: ['object', 'body']
     };
 
     VisitorOption = {

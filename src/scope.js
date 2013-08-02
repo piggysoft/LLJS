@@ -55,7 +55,6 @@
   const PrimitiveType = Types.PrimitiveType;
   const StructType = Types.StructType;
   const PointerType = Types.PointerType;
-  const ArrayType = Types.ArrayType;
   const ArrowType = Types.ArrowType;
 
   /**
@@ -65,7 +64,8 @@
   function Variable(name, type) {
     this.name = name;
     this.type = type;
-    this.isStackAllocated = (type instanceof StructType || type instanceof ArrayType);
+    this.isStackAllocated = (type instanceof StructType ||
+                             (type && type.arraySize !== undefined));
   }
 
   Variable.prototype.toString = function () {
@@ -160,7 +160,7 @@
       variable.name = this.freshName(name, variable);
     }
 
-    // console.log("added variable " + variable + " to scope " + this);
+    //logger.info("added variable " + variable + " to scope " + this);
   };
 
   Scope.prototype.MEMORY = function MEMORY() {
@@ -186,15 +186,15 @@
   Scope.prototype.MEMSET = function MEMSET(size) {
     return this.frame.MEMSET(size);
   };
-
+  
   Scope.prototype.MEMCHECK_CALL_PUSH = function MEMCHECK_CALL_PUSH() {
     return this.frame.MEMCHECK_CALL_PUSH();
   };
-
+  
   Scope.prototype.MEMCHECK_CALL_RESET = function MEMCHECK_CALL_RESET() {
     return this.frame.MEMCHECK_CALL_RESET();
   };
-
+  
   Scope.prototype.MEMCHECK_CALL_POP = function MEMCHECK_CALL_POP() {
     return this.frame.MEMCHECK_CALL_POP();
   };
@@ -263,15 +263,15 @@
     }
     return getCachedLocal(this, name, ty);
   };
-
+  
   Frame.prototype.MEMCHECK_CALL_PUSH = function MEMCHECK_CALL_PUSH() {
     return getCachedLocal(this, "memcheck_call_push", "dyn");
   };
-
+  
   Frame.prototype.MEMCHECK_CALL_RESET = function MEMCHECK_CALL_RESET() {
     return getCachedLocal(this, "memcheck_call_reset", "dyn");
   };
-
+  
   Frame.prototype.MEMCHECK_CALL_POP = function MEMCHECK_CALL_POP() {
     return getCachedLocal(this, "memcheck_call_pop", "dyn");
   };

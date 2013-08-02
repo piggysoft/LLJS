@@ -108,7 +108,7 @@
 
     FunctionDeclaration: {
       extends: "Declaration",
-      fields:  ["@id", "@modifiers", "@params", "@body", "@decltype", "generator", "expression"]
+      fields:  ["@id", "@params", "@body", "@decltype", "generator", "expression"]
     },
 
     VariableDeclaration: {
@@ -259,22 +259,17 @@
 
     PointerType: {
       extends: "Type",
-      fields: ["@base"]
-    },
-
-    ArrayType: {
-      extends: "PointerType",
-      fields: ["length"]
+      fields: ["@base", "arraySize"]
     },
 
     StructType: {
       extends: "Type",
-      fields: ["@id", "@members", "isUnion"]
+      fields: ["@id", "@fields", "isUnion"]
     },
 
-    MemberDeclarator: {
+    FieldDeclarator: {
       extends: "Node",
-      fields: ["modifiers", "@declarator"]
+      fields: ["@id", "@decltype"]
     },
 
     ArrowType: {
@@ -372,9 +367,7 @@
         if (child instanceof Array) {
           arr = this[children[i]] = [];
           for (var k = 0, l = child.length; k < l; k++) {
-            if (!child[k]) {
-              arr.push(child[k]);
-            } else if (typeof child[k][name] === "function") {
+            if (typeof child[k][name] === "function") {
               trans = child[k][name](o);
               if (trans !== null) {
                 arr.push(trans);
@@ -409,14 +402,71 @@
     };
   };
 
+  exports.makePass = function makePass(name, prop, backward) {
+    return function (o) {
+      var trans, arr;
+      var child, children = this._children;
+      var i, k;
+      for (var x = 0, j = children.length; x < j; x++) {
+        i = backward ? children.length - 1 - x : x;
+        if (!(child = this[children[i]])) {
+          continue;
+        }
+
+        if (child instanceof Array) {
+          arr = this[children[i]] = [];
+          var y;
+          for (var y = 0, l = child.length; y < l; y++) {
+            k = backward ? child.length - 1 - y : y;
+            if (!child[k]) {
+              if (backward) {
+                arr.unshift(child[k]);
+              } else {
+                arr.push(child[k]);
+              }
+            } else if (typeof child[k][name] === "function") {
+              trans = child[k][name](o);
+              if (trans !== null) {
+                if (backward) {
+                  arr.unshift(trans);
+                } else {
+                  arr.push(trans);
+                }
+              }
+            }
+          }
+        } else if (typeof child[name] === "function") {
+          trans = child[name](o);
+          if (trans === null) {
+            this[children[i]] = undefined;
+          } else {
+            this[children[i]] = trans;
+          }
+        }
+      }
+
+      if (typeof this[prop] === "function") {
+        if (o.logger && typeof this.loc !== "undefined") {
+          o.logger.push(this);
+          trans = this[prop](o);
+          o.logger.pop();
+        } else {
+          trans = this[prop](o);
+        }
+        if (trans === null) {
+          return null;
+        }
+        return trans ? trans : this;
+      }
+
+      return this;
+    };
+  };
+
   exports.lift = function lift(raw) {
-    if (!raw) {
-      return raw;
-    }
-    
     if (raw instanceof Array) {
       return raw.map(function (r) {
-        return lift(r);
+        return r ? lift(r) : r;
       });
     }
 
@@ -446,9 +496,6 @@
   };
 
   exports.flatten = function flatten(node) {
-    if (!node) {
-      return node;
-    }
     if (node instanceof Array) {
       return node.map(function (n) {
         return flatten(n);

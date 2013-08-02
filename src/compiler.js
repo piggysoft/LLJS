@@ -26,10 +26,8 @@
   const Node = T.Node;
   const Literal = T.Literal;
   const Identifier = T.Identifier;
-  const ArrayExpression = T.ArrayExpression;
   const VariableDeclaration = T.VariableDeclaration;
   const VariableDeclarator = T.VariableDeclarator;
-  const MemberDeclarator = T.MemberDeclarator;
   const MemberExpression = T.MemberExpression;
   const BinaryExpression = T.BinaryExpression;
   const SequenceExpression = T.SequenceExpression;
@@ -52,10 +50,6 @@
   const TypeAliasDirective = T.TypeAliasDirective;
   const CastExpression = T.CastExpression;
 
-  function literal(x) {
-    return new Literal(x);
-  }
-  
   /**
    * Import utilities.
    */
@@ -87,9 +81,7 @@
   const TypeAlias = Types.TypeAlias;
   const PrimitiveType = Types.PrimitiveType;
   const StructType = Types.StructType;
-  const StructStaticType = Types.StructStaticType;
   const PointerType = Types.PointerType;
-  const ArrayType = Types.ArrayType;
   const ArrowType = Types.ArrowType;
 
   /**
@@ -143,33 +135,13 @@
     return ty;
   };
 
-  T.ArrayType.prototype.construct = function () {
-    var ty = new ArrayType(this.base.construct());
-    ty.node = this;
-    if (this.length) {
-      ty.length = this.length;
-    }
-    return ty;
-  };
-
-  T.MemberDeclarator.prototype.construct = function () {
-    return {
-      name: this.declarator.id.name,
-      isStatic: this.modifiers.indexOf("static") >= 0,
-      type: this.declarator.decltype.construct()
-    };
-  };
-
-  T.StructType.prototype.construct = function construct() {
+  T.StructType.prototype.construct = function () {
     var ty = new StructType(this.id ? this.id.name : undefined);
-    var sty = ty.staticType;
     ty.node = this;
-    this.members.forEach(function (m) {
-      var member = m.construct();
-      (member.isStatic ? sty : ty).members.push(member);
+    ty.fields = this.fields.map(function (f) {
+      return { name: f.id.name, type: f.decltype.construct() };
     });
     ty.isUnion = this.isUnion;
-    logger.info("Constructed Type: " + ty.name);
     return ty;
   };
 
@@ -209,23 +181,11 @@
     if (this._resolved) {
       return this;
     }
+
     startResolving(this);
     this.base = this.base.resolve(types, true);
     if (this.arraySize) {
-      this.size = this.base.size * this.arraySize;
-    }
-    finishResolving(this);
-    return this;
-  };
-
-  ArrayType.prototype.resolve = function (types) {
-    if (this._resolved) {
-      return this;
-    }
-    startResolving(this);
-    this.base = this.base.resolve(types, true);
-    if (this.length) {
-      this.size = this.base.size * this.length;
+      this.size = this.base.size*this.arraySize;
     }
     finishResolving(this);
     return this;
@@ -235,19 +195,17 @@
     if (this._resolved) {
       return this;
     }
+
     startResolving(this);
-    var member, members = this.members;
-    for (var i = 0, j = members.length; i < j; i++) {
-      member = members[i];
-      if (member.type) {
-        member.type = member.type.resolve(types);
-        if (member.type instanceof ArrowType) {
-          member.type.paramTypes.unshift(new PointerType(this));
+    var field, fields = this.fields;
+    for (var i = 0, j = fields.length; i < j; i++) {
+      field = fields[i];
+      if (field.type) {
+        field.type = field.type.resolve(types);
+        if (field.type instanceof ArrowType) {
+          field.type.paramTypes.unshift(new PointerType(this));
         }
       }
-    }
-    if (this.staticType !== this) {
-      this.staticType.resolve(types);
     }
     finishResolving(this);
     return this;
@@ -272,32 +230,26 @@
 
   PointerType.prototype.lint = function () {
     check(this.base, "pointer without base type");
-    // check(this.base.size, "cannot take pointer of size 0 type " + quote(Types.tystr(this.base, 0)));
-  };
-
-  ArrayType.prototype.lint = function () {
-    check(this.base, "array without element type");
-    this.base.lint();
-    this.align = this.base.align;
+    check(this.base.size, "cannot take pointer of size 0 type " + quote(Types.tystr(this.base, 0)));
   };
 
   StructType.prototype.lint = function () {
     var maxAlignSize = 1;
     var maxAlignSizeType = Types.u8ty;
-    var members = this.members;
+    var fields = this.fields
     var field, type;
     var prev = { offset: 0, type: { size: 0 } };
-    for (var i = 0, j = members.length; i < j; i++) {
-      // Ignore member instance functions.
-      if (members[i].type instanceof ArrowType) {
+    for (var i = 0, j = fields.length; i < j; i++) {
+      if (fields[i].type instanceof ArrowType) {
+        // Ignore member functions.
         continue;
       }
 
-      this.fields.push(field = members[i]);
+      field = fields[i];
       type = field.type;
 
-      // Recursively lint field types.
-      if (type) {
+      if (type instanceof StructType) {
+        // Recursively lint inline structs
         type.lint();
       }
 
@@ -308,6 +260,7 @@
         maxAlignSize = type.align.size;
         maxAlignSizeType = type.align;
       }
+
       if (this.isUnion) {
         field.offset = 0;
       } else {
@@ -315,15 +268,8 @@
         prev = field;
       }
     }
-    if (field) {
-      this.size = alignTo(field.offset + field.type.size, maxAlignSize);
-    } else {
-      this.size = 0;
-    }
+    this.size = alignTo(field.offset + type.size, maxAlignSize);
     this.align = maxAlignSizeType;
-    if (this.staticType !== this) {
-      this.staticType.lint();
-    }
   };
 
   ArrowType.prototype.lint = function () {
@@ -383,9 +329,7 @@
 
   function scanList(list, o) {
     for (var i = 0, j = list.length; i < j; i++) {
-      if (list[i]) {
-        list[i].scan(o);
-      }
+      list[i].scan(o);
     }
   }
 
@@ -411,33 +355,21 @@
     return this;
   };
 
-  MemberDeclarator.prototype.scan = function (o) {
-    if (this.declarator instanceof FunctionDeclaration) {
-      this.declarator.scan(o);
-    }
-  };
-
   TypeAliasDirective.prototype.scan = function (o) {
     if (this.original instanceof T.StructType) {
-      var structName = this.original.id.name;
-      var structType = o.types[structName];
-      o.scope.addVariable(new Variable(structType.name, structType.staticType));
-      var io = extend(o, {
-        thisTy: new PointerType(structType),
-        scope: new Frame(o.scope, "Struct " + structName)
-      });
-      var so = extend(o, {
-        thisTy: new PointerType(structType.staticType),
-        scope: new Frame(o.scope, "Static Struct " + structName)
-      });
-      var members = this.original.members;
-      for (var i = 0; i < members.length; i++) {
-        var isStatic = members[i].modifiers.indexOf("static");
-        members[i].scan(isStatic >= 0 ? so : io);
+      var thisTy = new PointerType(o.types[this.original.id.name]);
+      var scope = new Frame(o.scope, "Struct " + this.original.id.name);;
+      var fields = this.original.fields;
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i] instanceof FunctionDeclaration) {
+          o = extend(o, { thisTy: thisTy });
+          o.scope = scope;
+          fields[i].scan(o);
+        }
       }
     }
     return this;
-  };
+  }
 
   FunctionExpression.prototype.scan =
   FunctionDeclaration.prototype.scan = function (o) {
@@ -623,18 +555,12 @@
   TypeAliasDirective.prototype.transform = function (o) {
     var functions = [];
     if (this.original instanceof T.StructType) {
-      var members = this.original.members;
-      for (var i = 0; i < members.length; i++) {
-        var name = this.original.id.name;
-        var member = members[i];
-        if (member.declarator instanceof FunctionDeclaration) {
-          if (members[i].modifiers.indexOf("static") >= 0) {
-            name += "_Static";
-          }
-          var functionDeclaration = member.declarator;
-          var fnName = functionDeclaration.id.name;
-          functionDeclaration.id.name = name + "$" + fnName;
-          functions.push(functionDeclaration.transform(o));
+      var fields = this.original.fields;
+      for (var i = 0; i < fields.length; i++) {
+        var field = fields[i];
+        if (field instanceof FunctionDeclaration) {
+          field.id.name = this.original.id.name + "$" + field.id.name;
+          functions.push(field.transform(o));
         }
       }
     }
@@ -720,10 +646,8 @@
       var variable = scope.getVariable(this.name);
 
       check(variable, "unknown identifier " + quote(this.name) + " in scope " + scope);
-      if (!(variable.type instanceof StructStaticType)) {
-        check(variable.isStackAllocated ? variable.frame === scope.frame : true,
-              "cannot close over stack-allocated variables");
-      }
+      check(variable.isStackAllocated ? variable.frame === scope.frame : true,
+            "cannot close over stack-allocated variables");
 
       this.name = variable.name;
       this.variable = variable;
@@ -740,64 +664,26 @@
 
   VariableDeclarator.prototype.transformNode = function (o) {
     var variable = this.id.variable;
-    var type = variable.type;
+    var ty = this.id.ty;
 
-    if (!type) {
-      return;
-    }
-
-    if (!this.init && type.defaultValue !== undefined) {
-      // Make sure we have an initializer if the type has a default value.
-      this.init = literal(type.defaultValue);
+    if (!this.init && ty && typeof ty.defaultValue !== "undefined" && !ty.arraySize) {
+      this.init = new Literal(ty.defaultValue);
     }
 
     if (this.arguments) {
-      // Does the variable declaration call the constructor?
-      var member = type.getMember(type.name);
-      if (member) {
-        var constructor = new MemberExpression(new Identifier(type.name + "$" + type.name), new Identifier("call"), false);
-        constructor = cast(constructor, member.type, true);
+      var field = ty.getField(ty.name);
+      if (field) {
+        var constructor = new MemberExpression(new Identifier(ty.name + "$" + ty.name), new Identifier("call"), false);
+        constructor = cast(constructor, field.type, true);
         var obj = new UnaryExpression("&", this.id, this.loc).transform(o);
         var callConstructor = new CallExpression(constructor, [obj].concat(this.arguments), this.loc).transform(o);
         // TODO: This is kind of retarded.
         this.init = new SequenceExpression([callConstructor, this.id]);
       }
     } else if (this.init) {
-      if (this.init instanceof ArrayExpression) {
-        var rootPointer = cast(this.id, new PointerType(type.getRoot()), true);
-        this.id = o.scope.freshTemp(type, this.loc);
-        var elementInitializers = new SequenceExpression([]);
-        var generated = 0;
-        function generateInitializers(type, elements) {
-          check(type.length === elements.length, "Incompatible array initializer.");
-          for (var i = 0; i < elements.length; i++) {
-            var element = elements[i];
-            if (element instanceof ArrayExpression) {
-              generateInitializers(type.base, element.elements);
-            } else {
-              elementInitializers.expressions.push (
-                new AssignmentExpression (
-                  new UnaryExpression("*",
-                    new BinaryExpression("+",
-                      rootPointer,
-                      literal(generated++)
-                    )
-                  ),
-                  "=", element, element.loc
-                )
-              );
-            }
-          }
-        }
-        generateInitializers(type, this.init.elements);
-        this.init = elementInitializers.transform(o);
-      } else {
-        var a = (new AssignmentExpression(this.id, "=", this.init, this.init.loc)).transform(o);
-        this.id = a.left;
-        this.init = a.right;
-      }
-    } else if (variable.isStackAllocated) {
-      this.id = o.scope.freshTemp(type, this.loc);
+      var a = (new AssignmentExpression(this.id, "=", this.init, this.init.loc)).transform(o);
+      this.id = a.left;
+      this.init = a.right;
     }
   };
 
@@ -847,10 +733,9 @@
       if (rty instanceof PrimitiveType && rty.integral) {
         ty = lty;
       } else if (rty instanceof PointerType && op === "-") {
-        check(lty.base.size === rty.base.size,
-              "subtraction with incompatible pointer types " +
-              quote(lty) + " and " + quote(rty));
-        ty = Types.i32ty;
+        if (lty.assignableFrom(rty)) {
+          ty = Types.i32ty;
+        }
       }
     } else if (BINOP_COMPARISON.indexOf(op) >= 0) {
       if (lty instanceof PointerType && isNull(this.right)) {
@@ -888,7 +773,7 @@
 
     if (op === "sizeof") {
       ty = this.argument.reflect(o);
-      return cast(literal(ty.size, this.argument.loc), Types.i32ty);
+      return cast(new Literal(ty.size, this.argument.loc), Types.i32ty);
     }
 
     var arg = this.argument = this.argument.transform(o);
@@ -930,18 +815,18 @@
     var ty;
     if (this.callee instanceof Identifier && (ty = o.types[this.callee.name])) {
       var pty = new PointerType(ty)
-      var allocation = new CallExpression(o.scope.MALLOC(), [cast(literal(ty.size), Types.u32ty)], this.loc);
+      var allocation = new CallExpression(o.scope.MALLOC(), [cast(new Literal(ty.size), Types.u32ty)], this.loc);
       allocation = cast(allocation.transform(o), pty);
       // Check if we have a constructor ArrowType.
       if (ty instanceof StructType) {
-        var member = ty.getMember(ty.name);
-        if (member) {
-          assert (member.type instanceof ArrowType);
+        var field = ty.getField(ty.name);
+        if (field) {
+          assert (field.type instanceof ArrowType);
           logger.push(this);
           var tmp = o.scope.freshTemp(pty, this.loc);
           var assignment = new AssignmentExpression(tmp, "=", allocation, this.loc);
           var constructor = new MemberExpression(new Identifier(ty.name + "$" + ty.name), new Identifier("call"), false);
-          constructor = cast(constructor, member.type, true);
+          constructor = cast(constructor, field.type, true);
           var callConstructor = new CallExpression(constructor, [assignment].concat(this.arguments), this.loc).transform(o);
           allocation = new SequenceExpression([callConstructor, tmp], this.loc);
           logger.pop();
@@ -952,7 +837,7 @@
     } else if (this.callee instanceof MemberExpression &&
                this.callee.computed &&
                (ty = o.types[this.callee.object.name])) {
-      var size = new BinaryExpression("*", literal(ty.size), this.callee.property, this.loc);
+      var size = new BinaryExpression("*", new Literal(ty.size), this.callee.property, this.loc);
       var allocation = new CallExpression(o.scope.MALLOC(), [cast(size, Types.u32ty)], this.loc);
       return cast(allocation.transform(o), new PointerType(ty));
     }
@@ -972,7 +857,7 @@
       var scope = o.scope;
       var op = this.operator === "++" ? "+" : "-";
       var ref = scope.cacheReference(arg);
-      var right = new BinaryExpression(op, ref.use, literal(1), this.loc);
+      var right = new BinaryExpression(op, ref.use, new Literal(1), this.loc);
       if (this.prefix) {
         return (new AssignmentExpression(ref.def, "=", right, this.loc)).transform(o);
       }
@@ -1017,21 +902,19 @@
         mc = scope.MEMCPY(Types.u8ty.size);
         size = lty.size;
       }
-      var memcpyTy = mc.ty.paramTypes[0];
-      var left = cast(new UnaryExpression("&", this.left, this.left.loc), memcpyTy, true);
-      var right = cast(new UnaryExpression("&", this.right, this.right.loc), memcpyTy, true);
-      return cast(new CallExpression(mc, [left, right, literal(size)]), lty).transform(o);
+      var left = new UnaryExpression("&", this.left, this.left.loc);
+      var right = new UnaryExpression("&", this.right, this.right.loc);
+      return cast(new CallExpression(mc, [left, right, new Literal(size)]), lty, this.loc).transform(o);
     } else {
       this.right = cast(this.right, lty);
-
       return cast(this, lty);
     }
   };
 
-  function MemberFunctionCall (object, member) {
+  function MemberFunctionCall (object, field) {
     assert (object.ty instanceof PointerType);
     this.object = object;
-    this.member = member;
+    this.field = field;
   }
 
   MemberExpression.prototype.transformNode = function (o) {
@@ -1054,39 +937,39 @@
       oty = oty.base;
     } else {
       check(!(oty instanceof PointerType), "cannot use . operator on pointer type.");
-      if (!(oty instanceof StructType || oty instanceof StructStaticType)) {
+      if (!(oty instanceof StructType)) {
         return;
       }
     }
 
     check(prop instanceof Identifier, "invalid property name.");
-    var member = oty.getMember(prop.name);
-    check(member, "Unknown member " + quote(prop.name) + " of type " + quote(Types.tystr(oty, 0)));
+    var field = this.structField = oty.getField(prop.name);
+    check(field, "Unknown field " + quote(prop.name) + " of type " + quote(Types.tystr(oty, 0)));
+
 
     // Expressions of the form |o->f(x, y)| need to be translated into |f(o, x, y)|. Here we
     // see the |o->f| part so we mark it as a |MemberFunctionCall| and take care of it when we
     // transform the CallExpression.
-    if (member.type instanceof ArrowType) {
+    if (field.type instanceof ArrowType) {
       // Normalize the form |o.f| into |&o->f| to simplify things.
       if (!(obj.ty instanceof PointerType)) {
         obj = new UnaryExpression("&", obj, this.loc).transform(o);
       }
-      return new MemberFunctionCall(obj, member);
+      return new MemberFunctionCall(obj, field);
     }
-    this.structField = member;
-    return cast(this, member.type);
+    return cast(this, field.type);
   };
 
   CallExpression.prototype.transformNode = function (o) {
 
     if (this.callee instanceof MemberFunctionCall) {
       var obj = this.callee.object;
-      var member = this.callee.member;
-      var name = obj.ty.base.name + "$" + member.name;
+      var field = this.callee.field;
+      var name = obj.ty.base.name + "$" + field.name;
       var fn = cast(new MemberExpression (
         new Identifier(name),
         new Identifier("call")
-      ), member.type, true);
+      ), field.type, true);
       return new CallExpression (
         fn, [this.callee.object].concat(this.arguments)
       ).transform(o);
@@ -1103,9 +986,7 @@
     var paramTys = fty.paramTypes;
     var args = this.arguments;
 
-    check(paramTys.length === args.length,
-          "Argument/parameter count mismatch, expected: " + paramTys.length +
-          ", received: " + args.length, true);
+    check(paramTys.length === args.length, "Argument/parameter count mismatch, expected: " + paramTys.length, true);
 
     for (var i = 0, j = paramTys.length; i < j; i++) {
       var arg = args[i];
@@ -1148,9 +1029,6 @@
     }
 
     if (!this.integral) {
-      if (rty && rty.numeric) {
-        return expr;
-      }
       return new CallExpression(new Identifier("Number"), [expr], expr.loc);
     }
 
@@ -1220,15 +1098,16 @@
     // truncation.
     var loc = expr.loc;
     if (lwidth !== 32 && lwidth < rwidth) {
-      conversion = new BinaryExpression("&", expr, literal(mask), loc);
+      conversion = new BinaryExpression("&", expr, new Literal(mask), loc);
       // Do we need to sign extend?
       if (lsigned) {
-        conversion = new BinaryExpression("<<", conversion, literal(shift), loc);
-        conversion = new BinaryExpression(">>", conversion, literal(shift), loc);
+        var shiftLit = new Literal(shift);
+        conversion = new BinaryExpression("<<", conversion, shift, loc);
+        conversion = new BinaryExpression(">>", conversion, shift, loc);
       }
     } else {
       conversion = new BinaryExpression((lsigned ? "|" : ">>>"), expr,
-                                        literal(0), loc);
+                                        new Literal(0), loc);
     }
 
     return conversion;
@@ -1280,7 +1159,7 @@
 
     var frameSize = frame.frameSizeInWords;
     if (frameSize) {
-      var allocStack = new AssignmentExpression(frame.realSP(), "-=", literal(frameSize));
+      var allocStack = new AssignmentExpression(frame.realSP(), "-=", new Literal(frameSize));
       var spDecl = new VariableDeclarator(frame.SP(), allocStack);
       code.push(new VariableDeclaration("const", [spDecl]));
     }
@@ -1294,6 +1173,8 @@
         variables.push(v);
       }
     }
+
+
 
     // Do this after the SP calculation since it might bring in U4. Since this
     // is after, we need to unshift.
@@ -1325,7 +1206,7 @@
     var frame = node.frame;
     var frameSize = frame.frameSizeInWords;
     if (frameSize) {
-      return [new ExpressionStatement(new AssignmentExpression(frame.realSP(), "+=", literal(frameSize)))];
+      return [new ExpressionStatement(new AssignmentExpression(frame.realSP(), "+=", new Literal(frameSize)))];
     }
     return [];
   }
@@ -1372,10 +1253,10 @@
       }
       this.frame.memcheckFnLoc = {name: memcheckName, line: this.loc.start.line, column: this.loc.start.column};
       this.body.body.unshift(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_PUSH(),
-                                                                        [literal(memcheckName),
-                                                                         literal(o.name),
-                                                                         literal(this.loc.start.line),
-                                                                         literal(this.loc.start.column)])));
+                                                                        [new Literal(memcheckName),
+                                                                         new Literal(o.name),
+                                                                         new Literal(this.loc.start.line),
+                                                                         new Literal(this.loc.start.column)])));
 
       if (this.body.body[this.body.body.length-1].type !== 'ReturnStatement') {
          this.body.body.push(new ExpressionStatement(new CallExpression(this.frame.MEMCHECK_CALL_POP(), [])));
@@ -1416,9 +1297,9 @@
     if(o.memcheck) {
       var fnLoc = o.scope.frame.memcheckFnLoc;
       this.body.body.unshift(new ExpressionStatement(new CallExpression(o.scope.frame.MEMCHECK_CALL_RESET(),
-                                                                        [literal(fnLoc.name),
-                                                                         literal(fnLoc.line),
-                                                                         literal(fnLoc.column)])));
+                                                                        [new Literal(fnLoc.name),
+                                                                         new Literal(fnLoc.line),
+                                                                         new Literal(fnLoc.column)])));
     }
     return Node.prototype.lower.call(this, o);
   };
@@ -1461,7 +1342,7 @@
       var assn = new AssignmentExpression(t, "=", arg, arg.loc);
       var exprList = [assn];
       if(frameSize) {
-        var restoreStack = new AssignmentExpression(scope.frame.realSP(), "+=", literal(frameSize));
+        var restoreStack = new AssignmentExpression(scope.frame.realSP(), "+=", new Literal(frameSize));
         exprList.push(restoreStack);
       }
       if(o.memcheck) {
@@ -1483,7 +1364,7 @@
       if (rty instanceof PrimitiveType && rty.integral) {
         var scale = lty.base.size / lty.base.align.size;
         if (scale > 1) {
-          this.right = new BinaryExpression("*", this.right, literal(scale), this.right.loc);
+          this.right = new BinaryExpression("*", this.right, new Literal(scale), this.right.loc);
         }
       }
     }
@@ -1533,7 +1414,7 @@
    */
 
   function createRequire(name) {
-    return new CallExpression(new Identifier("require"), [literal(name)]);
+    return new CallExpression(new Identifier("require"), [new Literal(name)]);
   }
 
   function createModule(program, name, bare, loadInstead, memcheck) {
@@ -1547,7 +1428,7 @@
         mdecl = new VariableDeclarator(cachedMEMORY, new Identifier("exports"));
       } else if (loadInstead) {
         mdecl = new VariableDeclarator(cachedMEMORY, new SequenceExpression([
-          new CallExpression(new Identifier("load"), [literal("memory.js")]),
+          new CallExpression(new Identifier("load"), [new Literal("memory.js")]),
           new Identifier("memory")]));
       } else {
         mdecl = new VariableDeclarator(cachedMEMORY, createRequire("memory"));
@@ -1558,7 +1439,7 @@
         assert (memcheck !== undefined);
         body.push(new ExpressionStatement(
           new CallExpression(new MemberExpression(cachedMEMORY, new Identifier("set_memcheck")),
-                             [literal(memcheck)])));
+                             [new Literal(memcheck)])));
       }
 
     }
@@ -1578,7 +1459,7 @@
     var moduleArgs = [
       new ThisExpression(),
       new ConditionalExpression(
-        new BinaryExpression("===", new UnaryExpression("typeof", exports), literal("undefined")),
+        new BinaryExpression("===", new UnaryExpression("typeof", exports), new Literal("undefined")),
         new AssignmentExpression(new Identifier(mname), "=", new ObjectExpression([])),
         exports)
     ];
@@ -1605,6 +1486,7 @@
     node = T.lift(node);
 
     // Pass 1.
+
     logger.info("Pass 1");
     var types = resolveAndLintTypes(node, clone(Types.builtinTypes));
     var o = { types: types, name: name, logger: _logger, warn: warningOptions(options), memcheck: options.memcheck };
