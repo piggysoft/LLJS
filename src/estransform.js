@@ -108,7 +108,7 @@
 
     FunctionDeclaration: {
       extends: "Declaration",
-      fields:  ["@id", "@params", "@body", "@decltype", "generator", "expression"]
+      fields:  ["@id", "@params", "@body", "@decltype", "generator", "expression", "@modifiers"]
     },
 
     VariableDeclaration: {
@@ -259,17 +259,22 @@
 
     PointerType: {
       extends: "Type",
-      fields: ["@base", "arraySize"]
+      fields: ["@base"]
+    },
+
+    ArrayType: {
+      extends: "PointerType",
+      fields: ["length"]
     },
 
     StructType: {
       extends: "Type",
-      fields: ["@id", "@fields", "isUnion"]
+      fields: ["@id", "@members", "isUnion"]
     },
 
-    FieldDeclarator: {
+    MemberDeclarator: {
       extends: "Node",
-      fields: ["@id", "@decltype"]
+      fields: ["modifiers", "@declarator"]
     },
 
     ArrowType: {
@@ -367,7 +372,9 @@
         if (child instanceof Array) {
           arr = this[children[i]] = [];
           for (var k = 0, l = child.length; k < l; k++) {
-            if (typeof child[k][name] === "function") {
+            if (!child[k]) {
+              arr.push(child[k]);
+            } else if (typeof child[k][name] === "function") {
               trans = child[k][name](o);
               if (trans !== null) {
                 arr.push(trans);
@@ -464,6 +471,10 @@
   };
 
   exports.lift = function lift(raw) {
+    if (!raw) {
+      return raw;
+    }
+    
     if (raw instanceof Array) {
       return raw.map(function (r) {
         return r ? lift(r) : r;
@@ -496,6 +507,9 @@
   };
 
   exports.flatten = function flatten(node) {
+    if (!node) {
+      return node;
+    }
     if (node instanceof Array) {
       return node.map(function (n) {
         return flatten(n);
